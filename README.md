@@ -1,23 +1,32 @@
-# SearchMyFiles for Linux
+# FolderScope
 
-Быстрый Linux-аналог NirSoft SearchMyFiles с нативным GUI. Программа написана
-на C++20 и Qt 6, не использует индекс и не запускает фоновую службу.
+Fast, native file search for Linux with a Windows-style GUI.
 
-Возможности:
+FolderScope is a C++20 + Qt 6 desktop app for finding files across one or more
+folders without indexing or background services. It is designed for fast
+interactive searches, duplicate discovery, and detailed result inspection in a
+single window.
 
-- поиск по нескольким корневым каталогам и wildcard-маскам;
-- исключение файлов и каталогов, ограничение подкаталогов;
-- фильтры размера, времени и Linux-атрибутов;
-- поиск текста или hex-последовательности внутри файлов;
-- поиск полных дубликатов и файлов с одинаковыми именами;
-- сводка размера по каталогам;
-- сортируемая таблица, открытие файлов и каталогов, копирование путей;
-- экспорт результатов в CSV, TSV/TXT, HTML, XML и JSON;
-- многопоточный поиск содержимого и вычисление хешей.
+## Highlights
 
-## Сборка
+- search across multiple root folders;
+- filter by name patterns, size, timestamps, and file attributes;
+- inspect duplicate files and files with matching names;
+- search inside file contents, including text and hex;
+- show folder summaries and duplicate groups;
+- sort, resize, hide, and restore columns;
+- export results to CSV, TSV/TXT, HTML, XML, and JSON;
+- open files and folders, copy paths, and use context actions from the results
+  table;
+- run searches in parallel for responsive large-directory scans.
 
-Нужны CMake, C++20-компилятор и Qt 6 (`Widgets`, `Concurrent`).
+## Building
+
+Requirements:
+
+- CMake
+- a C++20 compiler
+- Qt 6 with `Widgets`, `Concurrent`, and `DBus`
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -25,13 +34,16 @@ cmake --build build -j
 ./build/searchmyfiles
 ```
 
-Установка для текущей системы:
+Install into the current system:
 
 ```bash
 cmake --install build
 ```
 
-На Linux нет полного аналога Windows creation time, NTFS-атрибутов и Windows
-Search Handlers. Используются POSIX-время изменения/доступа/смены метаданных и
-атрибуты hidden/read-only/executable/symlink.
+## Notes
 
+FolderScope targets Linux only.
+
+Some Windows-specific SearchMyFiles features do not map directly to Linux,
+including NTFS-only metadata and Windows shell integrations. The app uses the
+native Linux equivalents where available.
