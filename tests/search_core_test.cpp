@@ -33,6 +33,17 @@ private slots:
         QVERIFY(!parseOptionalIsoDate(QStringLiteral("2026-not-a-date"), seconds));
     }
 
+    void selectsDuplicateRowsForDisplay()
+    {
+        QVERIFY(!shouldShowDuplicateResult(true, 0));
+        QVERIFY(!shouldShowDuplicateResult(true, 1));
+        QVERIFY(shouldShowDuplicateResult(true, 2));
+
+        QVERIFY(!shouldShowDuplicateResult(false, 0));
+        QVERIFY(shouldShowDuplicateResult(false, 1));
+        QVERIFY(shouldShowDuplicateResult(false, 2));
+    }
+
     void searchesContentsAndHashes()
     {
         QTemporaryDir directory;

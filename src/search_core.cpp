@@ -54,6 +54,13 @@ bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensi
     return false;
 }
 
+bool shouldShowDuplicateResult(bool copiesOnly, int keeperPriority)
+{
+    if (keeperPriority < 1)
+        return false;
+    return !copiesOnly || keeperPriority > 1;
+}
+
 QString humanSize(qint64 bytes)
 {
     static const QStringList units{QStringLiteral("B"), QStringLiteral("KB"),

@@ -518,18 +518,17 @@ public slots:
                             record.group = group;
                             record.duplicateCopy = duplicateCopy++;
                             duplicatedPaths.insert(record.path);
-                            if (o.mode == QStringLiteral("Duplicates search"))
+                            if (o.mode == QStringLiteral("Duplicates search")
+                                && shouldShowDuplicateResult(
+                                    o.showDuplicateCopiesOnly, record.duplicateCopy)) {
                                 results.push_back(record);
+                            }
                         }
                         ++group;
                     }
                 }
             }
             if (o.mode == QStringLiteral("Non-Duplicates search")) {
-                for (const auto &record : candidates)
-                    if (record.type == QStringLiteral("File") && !duplicatedPaths.contains(record.path))
-                        results.push_back(record);
-            } else if (!o.showOnlyDuplicateFiles) {
                 for (const auto &record : candidates)
                     if (record.type == QStringLiteral("File") && !duplicatedPaths.contains(record.path))
                         results.push_back(record);
@@ -1221,14 +1220,14 @@ public:
             action->setCheckable(true);
             duplicateOptionsGroup->addAction(action);
         }
-        showOnlyDuplicates->setChecked(options_.showOnlyDuplicateFiles);
-        showAllDuplicates->setChecked(!options_.showOnlyDuplicateFiles);
+        showOnlyDuplicates->setChecked(options_.showDuplicateCopiesOnly);
+        showAllDuplicates->setChecked(!options_.showDuplicateCopiesOnly);
         connect(showOnlyDuplicates, &QAction::triggered, this, [this] {
-            options_.showOnlyDuplicateFiles = true;
+            options_.showDuplicateCopiesOnly = true;
             saveOptions();
         });
         connect(showAllDuplicates, &QAction::triggered, this, [this] {
-            options_.showOnlyDuplicateFiles = false;
+            options_.showDuplicateCopiesOnly = false;
             saveOptions();
         });
 
@@ -1991,7 +1990,7 @@ private:
         settings.setValue(QStringLiteral("mode"), options_.mode);
         settings.setValue(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode);
         settings.setValue(QStringLiteral("duplicateNameWithoutExtension"), options_.duplicateNameWithoutExtension);
-        settings.setValue(QStringLiteral("showOnlyDuplicateFiles"), options_.showOnlyDuplicateFiles);
+        settings.setValue(QStringLiteral("showDuplicateCopiesOnly"), options_.showDuplicateCopiesOnly);
         settings.setValue(QStringLiteral("includeSubfoldersInSummary"), options_.includeSubfoldersInSummary);
         settings.setValue(QStringLiteral("hidden"), options_.hidden);
         settings.setValue(QStringLiteral("readonly"), options_.readonly);
@@ -2028,7 +2027,9 @@ private:
         options_.mode = s.value(QStringLiteral("mode"), options_.mode).toString();
         options_.duplicateNameMode = s.value(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode).toString();
         options_.duplicateNameWithoutExtension = s.value(QStringLiteral("duplicateNameWithoutExtension"), false).toBool();
-        options_.showOnlyDuplicateFiles = s.value(QStringLiteral("showOnlyDuplicateFiles"), true).toBool();
+        options_.showDuplicateCopiesOnly =
+            s.value(QStringLiteral("showDuplicateCopiesOnly"),
+                    s.value(QStringLiteral("showOnlyDuplicateFiles"), true)).toBool();
         options_.includeSubfoldersInSummary = s.value(QStringLiteral("includeSubfoldersInSummary"), false).toBool();
         options_.hidden = s.value(QStringLiteral("hidden"), options_.hidden).toString();
         options_.readonly = s.value(QStringLiteral("readonly"), options_.readonly).toString();

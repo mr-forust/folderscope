@@ -40,7 +40,7 @@ struct SearchOptions {
     QString mode = QStringLiteral("Standard search");
     QString duplicateNameMode = QStringLiteral("All files and folders");
     bool duplicateNameWithoutExtension = false;
-    bool showOnlyDuplicateFiles = true;
+    bool showDuplicateCopiesOnly = true;
     bool includeSubfoldersInSummary = false;
     QString hidden = QStringLiteral("Any");
     QString readonly = QStringLiteral("Any");
@@ -78,3 +78,4 @@ bool fileContains(const QString &path, const SearchOptions &options);
 bool filesEqual(const QString &leftPath, const QString &rightPath);
 QByteArray sha256(const QString &path);
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds);
+bool shouldShowDuplicateResult(bool copiesOnly, int keeperPriority);
