@@ -5,6 +5,23 @@ All notable changes to FolderScope are documented here.
 The project uses [Semantic Versioning](https://semver.org/). Release tags are
 formatted as `vMAJOR.MINOR.PATCH`.
 
+## [0.2.4] - 2026-07-25
+
+### Fixed
+
+- Corrected result-table context menu positioning.
+- Added validation for ISO date filters instead of silently accepting invalid
+  input.
+- Replaced the 2 GB size-filter limit with precise 64-bit inputs.
+- Preserved visible table order when acting on multiple selected files.
+- Made release preparation reject untracked files.
+
+### Added
+
+- Added automated tests for search primitives, large size inputs, and release
+  safeguards.
+- Added the test suite to the CI verification gate.
+
 ## [0.2.3] - 2026-07-25
 
 ### Added
@@ -48,3 +65,4 @@ formatted as `vMAJOR.MINOR.PATCH`.
 [0.2.1]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.1
 [0.2.2]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.2
 [0.2.3]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.3
+[0.2.4]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.4
