@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDataStream>
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusMessage>
@@ -33,14 +34,18 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QProgressBar>
 #include <QProcess>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSettings>
 #include <QSortFilterProxyModel>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTextEdit>
@@ -88,6 +93,7 @@ struct SearchOptions {
     bool followLinks = false;
     bool retrieveOwner = false;
     bool accurateProgress = true;
+    bool useCache = true;
     int maxDepth = 0;
     int maxResults = 0;
     QString mode = QStringLiteral("Standard search");
@@ -277,6 +283,174 @@ static QByteArray sha256(const QString &path)
     return hash.result();
 }
 
+struct SearchCacheEntry {
+    qint64 size = -1;
+    qint64 modified = -1;
+    qint64 lastUsed = 0;
+    QByteArray sha256;
+    QHash<QByteArray, bool> contentMatches;
+};
+
+class SearchCache {
+public:
+    SearchCache()
+    {
+        const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir().mkpath(cacheRoot);
+        path_ = QDir(cacheRoot).filePath(QStringLiteral("search-cache-v1.dat"));
+        load();
+    }
+
+    void setEnabled(bool enabled) { enabled_ = enabled; }
+    bool enabled() const { return enabled_; }
+
+    bool findHash(const FileRecord &record, QByteArray &digest)
+    {
+        if (!enabled_)
+            return false;
+        QMutexLocker lock(&mutex_);
+        auto it = entries_.find(record.path);
+        if (it == entries_.end() || !signatureMatches(*it, record) || it->sha256.isEmpty())
+            return false;
+        it->lastUsed = QDateTime::currentSecsSinceEpoch();
+        digest = it->sha256;
+        return true;
+    }
+
+    void storeHash(const FileRecord &record, const QByteArray &digest)
+    {
+        if (!enabled_ || digest.isEmpty())
+            return;
+        QMutexLocker lock(&mutex_);
+        SearchCacheEntry &entry = currentEntry(record);
+        entry.sha256 = digest;
+    }
+
+    std::optional<bool> findContent(const FileRecord &record, const QByteArray &queryKey)
+    {
+        if (!enabled_)
+            return std::nullopt;
+        QMutexLocker lock(&mutex_);
+        auto it = entries_.find(record.path);
+        if (it == entries_.end() || !signatureMatches(*it, record))
+            return std::nullopt;
+        const auto match = it->contentMatches.constFind(queryKey);
+        if (match == it->contentMatches.cend())
+            return std::nullopt;
+        it->lastUsed = QDateTime::currentSecsSinceEpoch();
+        return *match;
+    }
+
+    void storeContent(const FileRecord &record, const QByteArray &queryKey, bool matched)
+    {
+        if (!enabled_)
+            return;
+        QMutexLocker lock(&mutex_);
+        SearchCacheEntry &entry = currentEntry(record);
+        entry.contentMatches.insert(queryKey, matched);
+    }
+
+    void save()
+    {
+        if (!enabled_)
+            return;
+        QMutexLocker lock(&mutex_);
+        prune();
+        QSaveFile file(path_);
+        if (!file.open(QIODevice::WriteOnly))
+            return;
+        QDataStream stream(&file);
+        stream.setVersion(QDataStream::Qt_6_0);
+        stream << quint32(0x46534348) << quint32(1) << quint32(entries_.size());
+        for (auto it = entries_.cbegin(); it != entries_.cend(); ++it) {
+            stream << it.key() << it->size << it->modified << it->lastUsed << it->sha256;
+            stream << quint32(it->contentMatches.size());
+            for (auto match = it->contentMatches.cbegin(); match != it->contentMatches.cend(); ++match)
+                stream << match.key() << match.value();
+        }
+        if (stream.status() == QDataStream::Ok)
+            file.commit();
+    }
+
+    void clear()
+    {
+        QMutexLocker lock(&mutex_);
+        entries_.clear();
+        QFile::remove(path_);
+    }
+
+private:
+    static bool signatureMatches(const SearchCacheEntry &entry, const FileRecord &record)
+    {
+        return entry.size == record.size && entry.modified == record.modified;
+    }
+
+    SearchCacheEntry &currentEntry(const FileRecord &record)
+    {
+        SearchCacheEntry &entry = entries_[record.path];
+        if (!signatureMatches(entry, record)) {
+            entry = {};
+            entry.size = record.size;
+            entry.modified = record.modified;
+        }
+        entry.lastUsed = QDateTime::currentSecsSinceEpoch();
+        return entry;
+    }
+
+    void load()
+    {
+        QFile file(path_);
+        if (!file.open(QIODevice::ReadOnly))
+            return;
+        QDataStream stream(&file);
+        stream.setVersion(QDataStream::Qt_6_0);
+        quint32 magic = 0;
+        quint32 version = 0;
+        quint32 count = 0;
+        stream >> magic >> version >> count;
+        if (magic != 0x46534348 || version != 1 || count > 200'000)
+            return;
+        for (quint32 index = 0; index < count && stream.status() == QDataStream::Ok; ++index) {
+            QString path;
+            SearchCacheEntry entry;
+            quint32 contentCount = 0;
+            stream >> path >> entry.size >> entry.modified >> entry.lastUsed >> entry.sha256;
+            stream >> contentCount;
+            if (contentCount > 256)
+                return;
+            for (quint32 contentIndex = 0; contentIndex < contentCount; ++contentIndex) {
+                QByteArray key;
+                bool matched = false;
+                stream >> key >> matched;
+                entry.contentMatches.insert(key, matched);
+            }
+            entries_.insert(path, std::move(entry));
+        }
+        if (stream.status() != QDataStream::Ok)
+            entries_.clear();
+    }
+
+    void prune()
+    {
+        constexpr qsizetype maxEntries = 100'000;
+        if (entries_.size() <= maxEntries)
+            return;
+        QVector<QPair<qint64, QString>> ages;
+        ages.reserve(entries_.size());
+        for (auto it = entries_.cbegin(); it != entries_.cend(); ++it)
+            ages.push_back({it->lastUsed, it.key()});
+        std::sort(ages.begin(), ages.end(),
+                  [](const auto &left, const auto &right) { return left.first > right.first; });
+        for (qsizetype index = maxEntries; index < ages.size(); ++index)
+            entries_.remove(ages[index].second);
+    }
+
+    QHash<QString, SearchCacheEntry> entries_;
+    QMutex mutex_;
+    QString path_;
+    bool enabled_ = true;
+};
+
 class SearchEngine final : public QObject {
     Q_OBJECT
 public:
@@ -284,11 +458,19 @@ public:
 
 public slots:
     void stop() { cancelled_.store(true, std::memory_order_relaxed); }
+    void clearCache()
+    {
+        cache_.clear();
+        emit cacheCleared();
+    }
 
     void search(const SearchOptions &o)
     {
         cancelled_.store(false, std::memory_order_relaxed);
         cancelledByLimit_ = false;
+        cache_.setEnabled(o.useCache);
+        cacheHits_.store(0, std::memory_order_relaxed);
+        cacheMisses_.store(0, std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
         QVector<FileRecord> candidates;
         const Qt::CaseSensitivity cs = o.caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
@@ -479,7 +661,7 @@ public slots:
             const qsizetype total = candidates.size();
             QFuture<FileRecord> future = QtConcurrent::filtered(
                 candidates, [this, o, &checked, total](const FileRecord &r) {
-                    const bool matched = fileContains(r.path, o);
+                    const bool matched = cachedFileContains(r, o);
                     const qsizetype done = checked.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (done == total || done % 32 == 0)
                         emit phaseProgress(tr("Searching file contents"), done, total);
@@ -514,7 +696,7 @@ public slots:
                 if (sameSize.size() < 2)
                     continue;
                 auto hashes = QtConcurrent::blockingMapped(sameSize, [this, &hashed, hashTotal](const FileRecord &r) {
-                    auto result = std::pair<QByteArray, FileRecord>{sha256(r.path), r};
+                    auto result = std::pair<QByteArray, FileRecord>{cachedSha256(r), r};
                     const quint64 done = hashed.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (done == hashTotal || done % 16 == 0)
                         emit phaseProgress(tr("Checking duplicates"), done, hashTotal);
@@ -585,10 +767,10 @@ public slots:
                 if (sameName.size() < 2)
                     continue;
                 if (o.duplicateNameMode.contains(QStringLiteral("identical"), Qt::CaseInsensitive)) {
-                    const QByteArray firstHash = sha256(sameName.front().path);
+                    const QByteArray firstHash = cachedSha256(sameName.front());
                     bool identical = !firstHash.isEmpty();
                     for (qsizetype i = 1; identical && i < sameName.size(); ++i) {
-                        identical = sha256(sameName[i].path) == firstHash
+                        identical = cachedSha256(sameName[i]) == firstHash
                             && filesEqual(sameName.front().path, sameName[i].path);
                     }
                     const bool wantsNonIdentical = o.duplicateNameMode.startsWith(QStringLiteral("Only non"));
@@ -644,16 +826,51 @@ public slots:
 
         const double seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - started).count();
-        emit finished(results, tr("%1 results, %2 entries scanned in %3 seconds")
-                                  .arg(results.size()).arg(scanned).arg(seconds, 0, 'f', 2));
+        cache_.save();
+        emit finished(results, tr("%1 results, %2 entries scanned in %3 seconds; cache: %4 hits")
+                                  .arg(results.size()).arg(scanned).arg(seconds, 0, 'f', 2)
+                                  .arg(cacheHits_.load(std::memory_order_relaxed)));
     }
 
 signals:
     void progress(const QString &path, quint64 scanned);
     void phaseProgress(const QString &phase, quint64 completed, quint64 total);
+    void cacheCleared();
     void finished(const QVector<FileRecord> &results, const QString &message);
 
 private:
+    QByteArray cachedSha256(const FileRecord &record)
+    {
+        QByteArray digest;
+        if (cache_.findHash(record, digest)) {
+            cacheHits_.fetch_add(1, std::memory_order_relaxed);
+            return digest;
+        }
+        cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+        digest = sha256(record.path);
+        cache_.storeHash(record, digest);
+        return digest;
+    }
+
+    bool cachedFileContains(const FileRecord &record, const SearchOptions &o)
+    {
+        QByteArray queryData;
+        QDataStream stream(&queryData, QIODevice::WriteOnly);
+        stream << o.contains << o.binary << o.multipleValues << o.multipleAnd << o.caseSensitive;
+        const QByteArray queryKey = QCryptographicHash::hash(queryData, QCryptographicHash::Sha256);
+        if (const auto cached = cache_.findContent(record, queryKey)) {
+            cacheHits_.fetch_add(1, std::memory_order_relaxed);
+            return *cached;
+        }
+        cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+        const bool matched = fileContains(record.path, o);
+        cache_.storeContent(record, queryKey, matched);
+        return matched;
+    }
+
+    SearchCache cache_;
+    std::atomic<quint64> cacheHits_ = 0;
+    std::atomic<quint64> cacheMisses_ = 0;
     std::atomic_bool cancelled_ = false;
     bool cancelledByLimit_ = false;
 };
@@ -829,6 +1046,8 @@ public:
         retrieveOwner_ = new QCheckBox(tr("Retrieve file owner (slower)")); retrieveOwner_->setChecked(o.retrieveOwner);
         accurateProgress_ = new QCheckBox(tr("Count files first for accurate progress"));
         accurateProgress_->setChecked(o.accurateProgress);
+        useCache_ = new QCheckBox(tr("Use persistent cache for hashes and content searches"));
+        useCache_->setChecked(o.useCache);
         maxDepth_ = new QSpinBox; maxDepth_->setRange(0, 1024); maxDepth_->setValue(o.maxDepth);
         maxDepth_->setSpecialValueText(tr("Unlimited"));
         maxResults_ = new QSpinBox; maxResults_->setRange(0, 100'000'000); maxResults_->setValue(o.maxResults);
@@ -840,6 +1059,7 @@ public:
         filesForm->addRow(followLinks_);
         filesForm->addRow(retrieveOwner_);
         filesForm->addRow(accurateProgress_);
+        filesForm->addRow(useCache_);
         filesForm->addRow(tr("Stop after finding:"), maxResults_);
         tabs->addTab(filesPage, tr("Files & folders"));
 
@@ -936,6 +1156,7 @@ public:
         o.followLinks = followLinks_->isChecked();
         o.retrieveOwner = retrieveOwner_->isChecked();
         o.accurateProgress = accurateProgress_->isChecked();
+        o.useCache = useCache_->isChecked();
         o.maxDepth = maxDepth_->value();
         o.maxResults = maxResults_->value();
         o.mode = mode_->currentText();
@@ -996,6 +1217,7 @@ private:
     QCheckBox *followLinks_{};
     QCheckBox *retrieveOwner_{};
     QCheckBox *accurateProgress_{};
+    QCheckBox *useCache_{};
     QSpinBox *maxDepth_{};
     QSpinBox *maxResults_{};
     QComboBox *hidden_{};
@@ -1023,6 +1245,7 @@ public:
         table_->setSortingEnabled(true);
         table_->setAlternatingRowColors(true);
         table_->setContextMenuPolicy(Qt::CustomContextMenu);
+        table_->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
         table_->horizontalHeader()->setSectionResizeMode(ResultsModel::Name, QHeaderView::ResizeToContents);
         table_->horizontalHeader()->setSectionResizeMode(ResultsModel::Folder, QHeaderView::Stretch);
         setCentralWidget(table_);
@@ -1222,6 +1445,11 @@ public:
                   [this](bool value) { options_.retrieveOwner = value; saveOptions(); });
         addToggle(tr("Accurate Progress (Count Files First)"), options_.accurateProgress,
                   [this](bool value) { options_.accurateProgress = value; saveOptions(); });
+        addToggle(tr("Use Persistent Search Cache"), options_.useCache,
+                  [this](bool value) { options_.useCache = value; saveOptions(); });
+        optionsMenu->addAction(tr("Clear Search Cache"), this, [this] {
+            emit clearCacheRequested();
+        });
         addToggle(tr("Set Focus On Search Start"), focusOnSearchStart_,
                   [this](bool value) { focusOnSearchStart_ = value; });
         addToggle(tr("Set Focus On Search End"), focusOnSearchEnd_,
@@ -1249,6 +1477,10 @@ public:
         connect(&workerThread_, &QThread::finished, engine_, &QObject::deleteLater);
         connect(this, &MainWindow::startRequested, engine_, &SearchEngine::search);
         connect(this, &MainWindow::stopRequested, engine_, &SearchEngine::stop, Qt::DirectConnection);
+        connect(this, &MainWindow::clearCacheRequested, engine_, &SearchEngine::clearCache);
+        connect(engine_, &SearchEngine::cacheCleared, this, [this] {
+            statusBar()->showMessage(tr("Search cache cleared"), 5000);
+        });
         connect(engine_, &SearchEngine::progress, this, [this](const QString &path, quint64 count) {
             progress_->setRange(0, 0);
             progress_->setFormat(tr("Scanning… %1 entries").arg(count));
@@ -1309,6 +1541,8 @@ public:
             executeConfiguredAction(doubleClickAction_);
         });
         connect(table_, &QWidget::customContextMenuRequested, this, &MainWindow::contextMenu);
+        connect(table_->horizontalHeader(), &QHeaderView::customContextMenuRequested,
+                this, &MainWindow::headerContextMenu);
     }
 
     ~MainWindow() override
@@ -1339,6 +1573,7 @@ protected:
 signals:
     void startRequested(const SearchOptions &options);
     void stopRequested();
+    void clearCacheRequested();
 
 private slots:
     void showOptions()
@@ -1684,6 +1919,44 @@ private slots:
         menu.exec(table_->viewport()->mapToGlobal(point));
     }
 
+    void headerContextMenu(const QPoint &point)
+    {
+        QHeaderView *header = table_->horizontalHeader();
+        const int clickedColumn = header->logicalIndexAt(point);
+        QMenu menu(this);
+        auto *autoWidthColumn = menu.addAction(tr("Auto Width This Column"));
+        autoWidthColumn->setEnabled(clickedColumn >= 0);
+        connect(autoWidthColumn, &QAction::triggered, this, [this, clickedColumn] {
+            table_->horizontalHeader()->setSectionResizeMode(clickedColumn, QHeaderView::Interactive);
+            table_->resizeColumnToContents(clickedColumn);
+            saveUiSettings();
+        });
+        menu.addAction(tr("Auto Width All Columns"), this, [this] {
+            table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            table_->resizeColumnsToContents();
+            saveUiSettings();
+        });
+        menu.addSeparator();
+        auto *hideColumn = menu.addAction(tr("Hide This Column"));
+        hideColumn->setEnabled(clickedColumn >= 0);
+        connect(hideColumn, &QAction::triggered, this, [this, clickedColumn] {
+            table_->setColumnHidden(clickedColumn, true);
+            saveUiSettings();
+        });
+        auto *columns = menu.addMenu(tr("Choose Columns"));
+        for (int column = 0; column < ResultsModel::ColumnCount; ++column) {
+            auto *action = columns->addAction(
+                model_->headerData(column, Qt::Horizontal, Qt::DisplayRole).toString());
+            action->setCheckable(true);
+            action->setChecked(!table_->isColumnHidden(column));
+            connect(action, &QAction::toggled, this, [this, column](bool visible) {
+                table_->setColumnHidden(column, !visible);
+                saveUiSettings();
+            });
+        }
+        menu.exec(header->mapToGlobal(point));
+    }
+
     void exportResults()
     {
         QVector<FileRecord> rows;
@@ -1882,6 +2155,7 @@ private:
         settings.setValue(QStringLiteral("followLinks"), options_.followLinks);
         settings.setValue(QStringLiteral("retrieveOwner"), options_.retrieveOwner);
         settings.setValue(QStringLiteral("accurateProgress"), options_.accurateProgress);
+        settings.setValue(QStringLiteral("useCache"), options_.useCache);
         settings.setValue(QStringLiteral("maxDepth"), options_.maxDepth);
         settings.setValue(QStringLiteral("maxResults"), options_.maxResults);
         settings.setValue(QStringLiteral("mode"), options_.mode);
@@ -1918,6 +2192,7 @@ private:
         options_.followLinks = s.value(QStringLiteral("followLinks"), false).toBool();
         options_.retrieveOwner = s.value(QStringLiteral("retrieveOwner"), false).toBool();
         options_.accurateProgress = s.value(QStringLiteral("accurateProgress"), true).toBool();
+        options_.useCache = s.value(QStringLiteral("useCache"), true).toBool();
         options_.maxDepth = s.value(QStringLiteral("maxDepth"), 0).toInt();
         options_.maxResults = s.value(QStringLiteral("maxResults"), 0).toInt();
         options_.mode = s.value(QStringLiteral("mode"), options_.mode).toString();

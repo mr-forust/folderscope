@@ -13,8 +13,10 @@ single window.
 - filter by name patterns, size, timestamps, and file attributes;
 - inspect duplicate files and files with matching names;
 - search inside file contents, including text and hex;
+- reuse a persistent, automatically invalidated cache for content matches and
+  duplicate hashes;
 - show folder summaries and duplicate groups;
-- sort, resize, hide, and restore columns;
+- sort, resize, hide, and restore columns, including per-column header actions;
 - export results to CSV, TSV/TXT, HTML, XML, and JSON;
 - open files and folders, copy paths, and use context actions from the results
   table;
