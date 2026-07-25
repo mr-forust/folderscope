@@ -5,6 +5,13 @@ All notable changes to FolderScope are documented here.
 The project uses [Semantic Versioning](https://semver.org/). Release tags are
 formatted as `vMAJOR.MINOR.PATCH`.
 
+## [0.2.2] - 2026-07-25
+
+### Fixed
+
+- Scoped workflow YAML linting to the `.gitea` source directory.
+- Combined CI and tag-gated release publishing into one workflow.
+
 ## [0.2.1] - 2026-07-25
 
 ### Fixed
@@ -25,3 +32,4 @@ formatted as `vMAJOR.MINOR.PATCH`.
 
 [0.2.0]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.0
 [0.2.1]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.1
+[0.2.2]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.2
