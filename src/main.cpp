@@ -888,12 +888,21 @@ public:
 
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override
     {
-        if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
+        if (orientation != Qt::Horizontal)
+            return {};
+        if (role == Qt::ToolTipRole) {
+            if (section == DuplicateNumber)
+                return tr("Identifies one set of identical files");
+            if (section == DuplicateGroup)
+                return tr("Order based on the base-folder list; 1 = preferred copy to keep");
+            return {};
+        }
+        if (role != Qt::DisplayRole)
             return {};
         static const QStringList names{
             tr("Filename"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
             tr("Created Time"), tr("Last Accessed Time"), tr("Entry Modified Time"),
-            tr("Attributes"), tr("Extension"), tr("Duplicate Number"), tr("Duplicate Group"),
+            tr("Attributes"), tr("Extension"), tr("Duplicate Set"), tr("Keeper Priority"),
             tr("Type"), tr("File Owner"), tr("Full Path")
         };
         return names.value(section);
@@ -1856,8 +1865,8 @@ private slots:
         addValue(tr("Entry Modified Time:"), date(record->changed));
         addValue(tr("Attributes:"), record->attributes);
         addValue(tr("Extension:"), QFileInfo(record->name).suffix());
-        addValue(tr("Duplicate Number:"), record->group ? QString::number(record->group) : QString{});
-        addValue(tr("Duplicate Group:"),
+        addValue(tr("Duplicate Set:"), record->group ? QString::number(record->group) : QString{});
+        addValue(tr("Keeper Priority:"),
                  record->duplicateCopy ? QString::number(record->duplicateCopy) : QString{});
         addValue(tr("File Owner:"), record->owner);
         layout->addLayout(form);
@@ -1995,7 +2004,7 @@ private slots:
         const QStringList headers{
             tr("Filename"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
             tr("Created Time"), tr("Last Accessed Time"), tr("Entry Modified Time"),
-            tr("Attributes"), tr("Extension"), tr("Duplicate Number"), tr("Duplicate Group"),
+            tr("Attributes"), tr("Extension"), tr("Duplicate Set"), tr("Keeper Priority"),
             tr("Type"), tr("File Owner"), tr("Full Path")
         };
         QTextStream out(&file);
