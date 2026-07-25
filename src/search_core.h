@@ -7,6 +7,7 @@
 #include <QStringList>
 #include <QVector>
 
+#include <atomic>
 #include <optional>
 #include <sys/types.h>
 
@@ -76,8 +77,10 @@ bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensi
 QString humanSize(qint64 bytes);
 QString ownerName(uid_t uid);
 std::optional<QByteArray> hexNeedle(QString text);
-bool fileContains(const QString &path, const SearchOptions &options);
-bool filesEqual(const QString &leftPath, const QString &rightPath);
-QByteArray sha256(const QString &path);
+bool fileContains(const QString &path, const SearchOptions &options,
+                  const std::atomic_bool *cancelled = nullptr);
+bool filesEqual(const QString &leftPath, const QString &rightPath,
+                const std::atomic_bool *cancelled = nullptr);
+QByteArray sha256(const QString &path, const std::atomic_bool *cancelled = nullptr);
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds);
 bool shouldShowDuplicateResult(bool copiesOnly, int keeperPriority);

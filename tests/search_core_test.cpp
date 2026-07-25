@@ -90,6 +90,24 @@ private slots:
         QVERIFY(!filesEqual(firstPath, differentPath));
         QCOMPARE(sha256(firstPath), QCryptographicHash::hash(content, QCryptographicHash::Sha256));
     }
+
+    void cancelsFileOperations()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("file.bin"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("needle"), qint64(6));
+        file.close();
+
+        std::atomic_bool cancelled = true;
+        SearchOptions options;
+        options.contains = QStringLiteral("needle");
+        QVERIFY(!fileContains(path, options, &cancelled));
+        QVERIFY(!filesEqual(path, path, &cancelled));
+        QVERIFY(sha256(path, &cancelled).isEmpty());
+    }
 };
 
 QTEST_GUILESS_MAIN(SearchCoreTest)

@@ -94,8 +94,18 @@ std::optional<QByteArray> hexNeedle(QString text)
     return QByteArray::fromHex(text.toLatin1());
 }
 
-bool fileContains(const QString &path, const SearchOptions &options)
+namespace {
+bool isCancelled(const std::atomic_bool *cancelled)
 {
+    return cancelled && cancelled->load(std::memory_order_relaxed);
+}
+}
+
+bool fileContains(const QString &path, const SearchOptions &options,
+                  const std::atomic_bool *cancelled)
+{
+    if (isCancelled(cancelled))
+        return false;
     if (options.contains.isEmpty())
         return true;
 
@@ -124,7 +134,7 @@ bool fileContains(const QString &path, const SearchOptions &options)
     for (const QByteArray &needle : needles)
         overlap = std::max(overlap, needle.size());
     QByteArray tail;
-    while (!file.atEnd()) {
+    while (!file.atEnd() && !isCancelled(cancelled)) {
         QByteArray data = tail + file.read(1024 * 1024);
         if (!options.caseSensitive && !options.binary)
             data = data.toLower();
@@ -145,31 +155,36 @@ bool fileContains(const QString &path, const SearchOptions &options)
     return false;
 }
 
-bool filesEqual(const QString &leftPath, const QString &rightPath)
+bool filesEqual(const QString &leftPath, const QString &rightPath,
+                const std::atomic_bool *cancelled)
 {
+    if (isCancelled(cancelled))
+        return false;
     QFile left(leftPath);
     QFile right(rightPath);
     if (!left.open(QIODevice::ReadOnly) || !right.open(QIODevice::ReadOnly)
         || left.size() != right.size())
         return false;
-    while (!left.atEnd()) {
+    while (!left.atEnd() && !isCancelled(cancelled)) {
         const QByteArray leftData = left.read(1024 * 1024);
         const QByteArray rightData = right.read(leftData.size());
         if (leftData != rightData)
             return false;
     }
-    return right.atEnd();
+    return !isCancelled(cancelled) && right.atEnd();
 }
 
-QByteArray sha256(const QString &path)
+QByteArray sha256(const QString &path, const std::atomic_bool *cancelled)
 {
+    if (isCancelled(cancelled))
+        return {};
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    while (!file.atEnd())
+    while (!file.atEnd() && !isCancelled(cancelled))
         hash.addData(file.read(1024 * 1024));
-    return hash.result();
+    return isCancelled(cancelled) ? QByteArray{} : hash.result();
 }
 
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds)

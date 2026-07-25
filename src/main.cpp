@@ -255,6 +255,12 @@ public slots:
     void search(const SearchOptions &o)
     {
         cancelled_.store(false, std::memory_order_relaxed);
+        const auto finishIfCancelled = [this] {
+            if (!cancelled_.load(std::memory_order_relaxed))
+                return false;
+            emit finished({}, tr("Search stopped"));
+            return true;
+        };
         cancelledByLimit_ = false;
         cache_.setEnabled(o.useCache);
         cacheHits_.store(0, std::memory_order_relaxed);
@@ -284,7 +290,8 @@ public slots:
                     dirOptions |= fs::directory_options::follow_directory_symlink;
                 if (!o.recursive) {
                     for (fs::directory_iterator it(root, dirOptions, ec), end;
-                         it != end && !ec; it.increment(ec)) {
+                         it != end && !ec && !cancelled_.load(std::memory_order_relaxed);
+                         it.increment(ec)) {
                         ++totalEntries;
                         if (totalEntries % 2048 == 0)
                             emit phaseProgress(tr("Counting files"), totalEntries, 0);
@@ -397,7 +404,9 @@ public slots:
 
             if (!o.recursive) {
                 for (fs::directory_iterator it(root, dirOptions, ec), end;
-                     it != end && !ec && !cancelledByLimit_; it.increment(ec)) {
+                     it != end && !ec && !cancelled_.load(std::memory_order_relaxed)
+                         && !cancelledByLimit_;
+                     it.increment(ec)) {
                     process(*it, root);
                     if (++scanned % 512 == 0) {
                         if (totalEntries)
@@ -438,10 +447,8 @@ public slots:
         if (totalEntries)
             emit phaseProgress(tr("Scanning files"), std::min(scanned, totalEntries), totalEntries);
 
-        if (cancelled_.load(std::memory_order_relaxed)) {
-            emit finished({}, tr("Search stopped"));
+        if (finishIfCancelled())
             return;
-        }
 
         if (!o.contains.isEmpty() && !o.findFolders) {
             emit phaseProgress(tr("Searching file contents"), 0, candidates.size());
@@ -449,6 +456,8 @@ public slots:
             const qsizetype total = candidates.size();
             QFuture<FileRecord> future = QtConcurrent::filtered(
                 candidates, [this, o, &checked, total](const FileRecord &r) {
+                    if (cancelled_.load(std::memory_order_relaxed))
+                        return false;
                     const bool matched = cachedFileContains(r, o);
                     const qsizetype done = checked.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (done == total || done % 32 == 0)
@@ -456,6 +465,8 @@ public slots:
                     return matched;
                 });
             future.waitForFinished();
+            if (finishIfCancelled())
+                return;
             candidates = future.results();
             if (o.maxResults > 0 && candidates.size() > o.maxResults)
                 candidates.resize(o.maxResults);
@@ -480,6 +491,8 @@ public slots:
             int group = 1;
             QSet<QString> duplicatedPaths;
             for (auto &[size, sameSize] : bySize) {
+                if (cancelled_.load(std::memory_order_relaxed))
+                    break;
                 Q_UNUSED(size);
                 if (sameSize.size() < 2)
                     continue;
@@ -490,18 +503,24 @@ public slots:
                         emit phaseProgress(tr("Checking duplicates"), done, hashTotal);
                     return result;
                 });
+                if (cancelled_.load(std::memory_order_relaxed))
+                    break;
                 QHash<QByteArray, QVector<FileRecord>> sameHash;
                 for (auto &[hash, record] : hashes)
                     if (!hash.isEmpty())
                         sameHash[hash].push_back(record);
                 for (const auto &hashCandidates : sameHash) {
+                    if (cancelled_.load(std::memory_order_relaxed))
+                        break;
                     if (hashCandidates.size() < 2)
                         continue;
                     QVector<QVector<FileRecord>> exactGroups;
                     for (const auto &record : hashCandidates) {
+                        if (cancelled_.load(std::memory_order_relaxed))
+                            break;
                         bool placed = false;
                         for (auto &exact : exactGroups) {
-                            if (filesEqual(exact.front().path, record.path)) {
+                            if (filesEqual(exact.front().path, record.path, &cancelled_)) {
                                 exact.push_back(record);
                                 placed = true;
                                 break;
@@ -511,6 +530,8 @@ public slots:
                             exactGroups.push_back({record});
                     }
                     for (auto &exact : exactGroups) {
+                        if (cancelled_.load(std::memory_order_relaxed))
+                            break;
                         if (exact.size() < 2)
                             continue;
                         int duplicateCopy = 1;
@@ -528,6 +549,8 @@ public slots:
                     }
                 }
             }
+            if (finishIfCancelled())
+                return;
             if (o.mode == QStringLiteral("Non-Duplicates search")) {
                 for (const auto &record : candidates)
                     if (record.type == QStringLiteral("File") && !duplicatedPaths.contains(record.path))
@@ -545,6 +568,8 @@ public slots:
             quint64 namesDone = 0;
             emit phaseProgress(tr("Comparing duplicate names"), 0, byName.size());
             for (auto sameName : byName) {
+                if (cancelled_.load(std::memory_order_relaxed))
+                    break;
                 ++namesDone;
                 if (namesDone % 32 == 0 || namesDone == quint64(byName.size()))
                     emit phaseProgress(tr("Comparing duplicate names"), namesDone, byName.size());
@@ -558,7 +583,8 @@ public slots:
                     bool identical = !firstHash.isEmpty();
                     for (qsizetype i = 1; identical && i < sameName.size(); ++i) {
                         identical = cachedSha256(sameName[i]) == firstHash
-                            && filesEqual(sameName.front().path, sameName[i].path);
+                            && filesEqual(
+                                sameName.front().path, sameName[i].path, &cancelled_);
                     }
                     const bool wantsNonIdentical = o.duplicateNameMode.startsWith(QStringLiteral("Only non"));
                     if (identical == wantsNonIdentical)
@@ -572,9 +598,13 @@ public slots:
                 }
                 ++group;
             }
+            if (finishIfCancelled())
+                return;
         } else if (o.mode == QStringLiteral("Summary")) {
             QHash<QString, QVector<FileRecord>> byFolder;
             for (const auto &record : candidates) {
+                if (cancelled_.load(std::memory_order_relaxed))
+                    break;
                 byFolder[record.folder].push_back(record);
                 if (o.includeSubfoldersInSummary) {
                     QDir parent(record.folder);
@@ -594,6 +624,8 @@ public slots:
                 }
             }
             for (auto it = byFolder.cbegin(); it != byFolder.cend(); ++it) {
+                if (cancelled_.load(std::memory_order_relaxed))
+                    break;
                 qint64 total = 0;
                 qint64 totalOnDisk = 0;
                 qint64 newest = 0;
@@ -607,10 +639,14 @@ public slots:
                                    newest, 0, 0, 0, tr("%1 files").arg(it.value().size()),
                                    {}, {}, 0, 0});
             }
+            if (finishIfCancelled())
+                return;
         } else {
             results = std::move(candidates);
         }
 
+        if (finishIfCancelled())
+            return;
         const double seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - started).count();
         cache_.save();
@@ -634,8 +670,9 @@ private:
             return digest;
         }
         cacheMisses_.fetch_add(1, std::memory_order_relaxed);
-        digest = sha256(record.path);
-        cache_.storeHash(record, digest);
+        digest = sha256(record.path, &cancelled_);
+        if (!cancelled_.load(std::memory_order_relaxed))
+            cache_.storeHash(record, digest);
         return digest;
     }
 
@@ -650,8 +687,9 @@ private:
             return *cached;
         }
         cacheMisses_.fetch_add(1, std::memory_order_relaxed);
-        const bool matched = fileContains(record.path, o);
-        cache_.storeContent(record, queryKey, matched);
+        const bool matched = fileContains(record.path, o, &cancelled_);
+        if (!cancelled_.load(std::memory_order_relaxed))
+            cache_.storeContent(record, queryKey, matched);
         return matched;
     }
 
@@ -1315,12 +1353,16 @@ public:
             statusBar()->showMessage(tr("Search cache cleared"), 5000);
         });
         connect(engine_, &SearchEngine::progress, this, [this](const QString &path, quint64 count) {
+            if (isStopping_)
+                return;
             progress_->setRange(0, 0);
             progress_->setFormat(tr("Scanning… %1 entries").arg(count));
             statusBar()->showMessage(tr("Scanning %1 (%2 entries)").arg(path).arg(count));
         });
         connect(engine_, &SearchEngine::phaseProgress, this,
                 [this](const QString &phase, quint64 completed, quint64 total) {
+            if (isStopping_)
+                return;
             if (total == 0) {
                 progress_->setRange(0, 0);
                 progress_->setFormat(completed
@@ -1342,7 +1384,14 @@ public:
         workerThread_.start();
 
         connect(searchAction_, &QAction::triggered, this, &MainWindow::showOptions);
-        connect(stopAction_, &QAction::triggered, this, [this] { emit stopRequested(); });
+        connect(stopAction_, &QAction::triggered, this, [this] {
+            isStopping_ = true;
+            stopAction_->setEnabled(false);
+            progress_->setRange(0, 0);
+            progress_->setFormat(tr("Stopping…"));
+            statusBar()->showMessage(tr("Stopping search…"));
+            emit stopRequested();
+        });
         connect(refreshAction_, &QAction::triggered, this, &MainWindow::refreshSearch);
         connect(exportAction, &QAction::triggered, this, &MainWindow::exportResults);
         connect(openAction, &QAction::triggered, this, &MainWindow::openSelected);
@@ -1524,6 +1573,7 @@ private slots:
         if (isSearching_ || options_.roots.trimmed().isEmpty())
             return;
         isSearching_ = true;
+        isStopping_ = false;
         lastSearchOptions_ = options_;
         updateStaleSearchWarning();
         applyDisplayOptions();
@@ -1544,6 +1594,7 @@ private slots:
     void searchFinished(const QVector<FileRecord> &results, const QString &message)
     {
         isSearching_ = false;
+        isStopping_ = false;
         model_->setRows(results);
         searchAction_->setEnabled(true);
         stopAction_->setEnabled(false);
@@ -2099,6 +2150,7 @@ private:
     bool showGrid_ = true;
     bool showTooltips_ = true;
     bool isSearching_ = false;
+    bool isStopping_ = false;
 };
 
 int main(int argc, char **argv)
