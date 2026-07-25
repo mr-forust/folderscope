@@ -1,9 +1,12 @@
-name: release
+name: ci-release
 
 "on":
   push:
+    branches:
+      - main
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -16,7 +19,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify tag matches VERSION
+      - name: Verify release tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           tag="${GITHUB_REF##*/}"
@@ -38,6 +42,10 @@ jobs:
           status="$?"
           test "$status" = 0 || test "$status" = 124
 
+      - name: Verify Linux binary
+        shell: bash
+        run: test -x build/searchmyfiles
+
       - name: Lint YAML
         shell: bash
         run: |
@@ -47,7 +55,8 @@ jobs:
             cytopia/yamllint:latest \
             -c .yamllint .
 
-  linux-amd64:
+  publish-linux-amd64:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: [self-hosted, linux, arch, homelab]
     env:
