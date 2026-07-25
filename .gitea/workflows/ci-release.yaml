@@ -53,7 +53,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             cytopia/yamllint:latest \
-            -c .yamllint .
+            -c .yamllint .gitea
 
   publish-linux-amd64:
     if: startsWith(github.ref, 'refs/tags/v')
