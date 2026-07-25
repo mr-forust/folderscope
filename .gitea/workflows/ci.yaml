@@ -1,0 +1,52 @@
+name: ci
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux-amd64:
+    runs-on: [self-hosted, linux, arch, homelab]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure release build
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Smoke test GUI
+        shell: bash
+        run: |
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 3s ./build/searchmyfiles
+          status="$?"
+          test "$status" = 0 || test "$status" = 124
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: folderscope-linux-amd64
+          path: build/searchmyfiles
+
+  lint-yaml:
+    runs-on: [self-hosted, linux, arch, homelab]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint workflow files
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            cytopia/yamllint:latest \
+            -c .yamllint .

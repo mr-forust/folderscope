@@ -1,0 +1,139 @@
+name: release
+
+"on":
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, arch, homelab]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches VERSION
+        shell: bash
+        run: |
+          tag="${GITHUB_REF##*/}"
+          test "${tag#v}" = "$(tr -d '[:space:]' < VERSION)"
+
+      - name: Configure release build
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Smoke test GUI
+        shell: bash
+        run: |
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 3s ./build/searchmyfiles
+          status="$?"
+          test "$status" = 0 || test "$status" = 124
+
+      - name: Lint YAML
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            cytopia/yamllint:latest \
+            -c .yamllint .
+
+  linux-amd64:
+    needs: verify
+    runs-on: [self-hosted, linux, arch, homelab]
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure release build
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      - name: Package release
+        shell: bash
+        run: |
+          tag="${GITHUB_REF##*/}"
+          version="${tag#v}"
+          package="folderscope-${version}-linux-amd64"
+          rm -rf dist package
+          cmake --install build --prefix "$PWD/package/usr"
+          mkdir -p "package/${package}"
+          mv package/usr "package/${package}/"
+          cp README.md CHANGELOG.md VERSION "package/${package}/"
+          mkdir -p dist
+          tar -C package -czf "dist/${package}.tar.gz" "${package}"
+          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+
+      - name: Create Gitea release
+        id: release
+        shell: bash
+        run: |
+          tag="${GITHUB_REF##*/}"
+          release_url="https://gitea.forust.xyz/api/v1/repos/forust/folderscope/releases"
+          existing="$(curl -fsS \
+            "${release_url}/tags/${tag}" \
+            -H "Authorization: token ${GITEA_TOKEN}")" || existing='{}'
+          release_id="$(printf '%s' "$existing" | jq -r '.id // empty')"
+
+          if [ -z "$release_id" ]; then
+            payload="$(jq -n \
+              --arg tag "${tag}" \
+              --arg commit "${GITHUB_SHA}" \
+              --arg name "FolderScope ${tag}" \
+              --arg body "Release ${tag}. See CHANGELOG.md for notable changes." \
+              '{tag_name: $tag, target_commitish: $commit, name: $name, body: $body, draft: false, prerelease: false}')"
+            response="$(curl -fsS \
+              -X POST "${release_url}" \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "$payload")"
+            release_id="$(printf '%s' "$response" | jq -r '.id')"
+          fi
+
+          test -n "$release_id" && test "$release_id" != "null"
+          echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Gitea release assets
+        shell: bash
+        run: |
+          release_url="https://gitea.forust.xyz/api/v1/repos/forust/folderscope/releases"
+          release_id="${{ steps.release.outputs.release_id }}"
+          for asset in dist/*; do
+            name="$(basename "$asset")"
+            release="$(curl -fsS \
+              "${release_url}/${release_id}" \
+              -H "Authorization: token ${GITEA_TOKEN}")"
+            asset_id="$(printf '%s' "$release" | jq -r --arg name "$name" \
+              '.assets[]? | select(.name == $name) | .id' | head -n 1)"
+            if [ -n "$asset_id" ]; then
+              curl -fsS \
+                -X DELETE "${release_url}/${release_id}/assets/${asset_id}" \
+                -H "Authorization: token ${GITEA_TOKEN}"
+            fi
+            encoded="$(printf '%s' "$name" | jq -sRr @uri)"
+            curl -fsS \
+              -X POST "${release_url}/${release_id}/assets?name=${encoded}" \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -F "attachment=@${asset}"
+          done
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: folderscope-linux-amd64
+          path: dist/*

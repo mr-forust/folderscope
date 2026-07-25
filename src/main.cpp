@@ -1231,7 +1231,8 @@ public:
 
         menuBar()->addMenu(tr("&Help"))->addAction(tr("About"), this, [this] {
             QMessageBox::about(this, tr("About"),
-                tr("SearchMyFiles for Linux\n\nFast unindexed file search.\nC++20 + Qt 6."));
+                tr("FolderScope %1\n\nFast unindexed file search.\nC++20 + Qt 6.")
+                    .arg(QStringLiteral(FOLDERSCOPE_VERSION)));
         });
 
         progress_ = new QProgressBar;
