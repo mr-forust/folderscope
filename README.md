@@ -36,6 +36,12 @@ cmake --build build -j
 ./build/searchmyfiles
 ```
 
+Run the automated tests:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
 Install into the current system:
 
 ```bash

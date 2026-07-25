@@ -1,1 +1,7 @@
 /build/
+/cmake-build-*/
+/out/
+/.idea/
+/.vscode/
+/CMakeLists.txt.user
+/CMakeLists.txt.user.*

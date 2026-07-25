@@ -55,233 +55,21 @@
 #include <QUrl>
 #include <QtConcurrent>
 
+#include "long_long_spin_box.h"
+#include "search_core.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <functional>
 #include <optional>
-#include <pwd.h>
 #include <sys/stat.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
-
-struct SearchOptions {
-    QString roots = QDir::homePath();
-    QString fileWildcards = QStringLiteral("*");
-    QString subfolderWildcards = QStringLiteral("*");
-    QString excludeFiles;
-    QString excludeFolders;
-    QString includeFolders;
-    QString contains;
-    bool binary = false;
-    bool multipleValues = false;
-    bool multipleAnd = false;
-    bool caseSensitive = false;
-    qint64 minSize = 0;
-    qint64 maxSize = 0;
-    qint64 minTime = 0;
-    qint64 maxTime = 0;
-    QString timeField = QStringLiteral("Modified time");
-    int lastMinutes = 0;
-    bool recursive = true;
-    bool findFiles = true;
-    bool findFolders = false;
-    bool followLinks = false;
-    bool retrieveOwner = false;
-    bool accurateProgress = true;
-    bool useCache = true;
-    int maxDepth = 0;
-    int maxResults = 0;
-    QString mode = QStringLiteral("Standard search");
-    QString duplicateNameMode = QStringLiteral("All files and folders");
-    bool duplicateNameWithoutExtension = false;
-    bool showOnlyDuplicateFiles = true;
-    bool includeSubfoldersInSummary = false;
-    QString hidden = QStringLiteral("Any");
-    QString readonly = QStringLiteral("Any");
-    QString executable = QStringLiteral("Any");
-};
-
-struct FileRecord {
-    QString path;
-    QString name;
-    QString folder;
-    qint64 size = 0;
-    qint64 sizeOnDisk = 0;
-    qint64 modified = 0;
-    qint64 created = 0;
-    qint64 accessed = 0;
-    qint64 changed = 0;
-    QString type;
-    QString owner;
-    QString attributes;
-    int group = 0;
-    int duplicateCopy = 0;
-};
-
-Q_DECLARE_METATYPE(SearchOptions)
-Q_DECLARE_METATYPE(FileRecord)
-Q_DECLARE_METATYPE(QVector<FileRecord>)
-
-static QStringList patterns(const QString &text)
-{
-    QStringList out;
-    QString item;
-    bool quoted = false;
-    for (QChar ch : text) {
-        if (ch == u'"') {
-            quoted = !quoted;
-        } else if (!quoted && (ch == u';' || ch == u',')) {
-            if (!item.trimmed().isEmpty())
-                out.push_back(item.trimmed());
-            item.clear();
-        } else {
-            item += ch;
-        }
-    }
-    if (!item.trimmed().isEmpty())
-        out.push_back(item.trimmed());
-    return out;
-}
-
-static QStringList exclusionPatterns(const QString &text)
-{
-    QString normalized = text;
-    normalized.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(";"));
-    QStringList result = patterns(normalized);
-    for (QString &pattern : result) {
-        if (!pattern.contains(u'*') && !pattern.contains(u'?') && !pattern.contains(u'/'))
-            pattern = QStringLiteral("*.") + pattern.remove(QRegularExpression(QStringLiteral("^\\.")));
-    }
-    return result;
-}
-
-static bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensitivity cs)
-{
-    for (const QString &pattern : items) {
-        const auto regex = QRegularExpression(
-            QRegularExpression::wildcardToRegularExpression(pattern),
-            cs == Qt::CaseInsensitive ? QRegularExpression::CaseInsensitiveOption
-                                      : QRegularExpression::NoPatternOption);
-        if (regex.match(value).hasMatch())
-            return true;
-    }
-    return false;
-}
-
-static QString humanSize(qint64 bytes)
-{
-    static const QStringList units{QStringLiteral("B"), QStringLiteral("KB"),
-                                   QStringLiteral("MB"), QStringLiteral("GB"),
-                                   QStringLiteral("TB")};
-    double value = static_cast<double>(bytes);
-    int unit = 0;
-    while (value >= 1024.0 && unit < units.size() - 1) {
-        value /= 1024.0;
-        ++unit;
-    }
-    return unit == 0 ? QStringLiteral("%1 B").arg(bytes)
-                     : QStringLiteral("%1 %2").arg(value, 0, 'f', 2).arg(units[unit]);
-}
-
-static QString ownerName(uid_t uid)
-{
-    struct passwd pwd {};
-    struct passwd *result = nullptr;
-    QByteArray buffer(16384, Qt::Uninitialized);
-    if (getpwuid_r(uid, &pwd, buffer.data(), static_cast<size_t>(buffer.size()), &result) == 0 && result)
-        return QString::fromLocal8Bit(result->pw_name);
-    return QString::number(uid);
-}
-
-static std::optional<QByteArray> hexNeedle(QString text)
-{
-    text.remove(QRegularExpression(QStringLiteral("\\s+")));
-    if (text.size() % 2 != 0 || !QRegularExpression(QStringLiteral("^[0-9a-fA-F]*$")).match(text).hasMatch())
-        return std::nullopt;
-    return QByteArray::fromHex(text.toLatin1());
-}
-
-static bool fileContains(const QString &path, const SearchOptions &o)
-{
-    if (o.contains.isEmpty())
-        return true;
-
-    QStringList terms = o.multipleValues ? patterns(o.contains) : QStringList{o.contains};
-    QList<QByteArray> needles;
-    for (const QString &term : terms) {
-        if (o.binary) {
-            const auto bytes = hexNeedle(term);
-            if (!bytes)
-                return false;
-            needles.push_back(*bytes);
-        } else {
-            needles.push_back(term.toUtf8());
-        }
-    }
-    if (needles.isEmpty())
-        return true;
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return false;
-
-    QVector<bool> found(needles.size(), false);
-    qsizetype overlap = 1;
-    for (const QByteArray &needle : needles)
-        overlap = std::max(overlap, needle.size());
-    QByteArray tail;
-    while (!file.atEnd()) {
-        QByteArray data = tail + file.read(1024 * 1024);
-        if (!o.caseSensitive && !o.binary)
-            data = data.toLower();
-        for (qsizetype i = 0; i < needles.size(); ++i) {
-            QByteArray needle = needles[i];
-            if (!o.caseSensitive && !o.binary)
-                needle = needle.toLower();
-            if (!found[i] && data.contains(needle))
-                found[i] = true;
-        }
-        const bool matched = o.multipleAnd
-            ? std::all_of(found.cbegin(), found.cend(), [](bool x) { return x; })
-            : std::any_of(found.cbegin(), found.cend(), [](bool x) { return x; });
-        if (matched)
-            return true;
-        tail = data.right(overlap - 1);
-    }
-    return false;
-}
-
-static bool filesEqual(const QString &leftPath, const QString &rightPath)
-{
-    QFile left(leftPath);
-    QFile right(rightPath);
-    if (!left.open(QIODevice::ReadOnly) || !right.open(QIODevice::ReadOnly)
-        || left.size() != right.size())
-        return false;
-    while (!left.atEnd()) {
-        const QByteArray a = left.read(1024 * 1024);
-        const QByteArray b = right.read(a.size());
-        if (a != b)
-            return false;
-    }
-    return right.atEnd();
-}
-
-static QByteArray sha256(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return {};
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    while (!file.atEnd())
-        hash.addData(file.read(1024 * 1024));
-    return hash.result();
-}
 
 struct SearchCacheEntry {
     qint64 size = -1;
@@ -1080,7 +868,7 @@ public:
         binary_ = new QCheckBox(tr("Binary search (hex bytes, e.g. A2 C5 2F)")); binary_->setChecked(o.binary);
         multiple_ = new QCheckBox(tr("Search multiple values (comma separated)")); multiple_->setChecked(o.multipleValues);
         multipleMode_ = new QComboBox; multipleMode_->addItems({tr("Or"), tr("And")});
-        multipleMode_->setCurrentText(o.multipleAnd ? tr("And") : tr("Or"));
+        multipleMode_->setCurrentIndex(o.multipleAnd ? 1 : 0);
         caseSensitive_ = new QCheckBox(tr("Case sensitive")); caseSensitive_->setChecked(o.caseSensitive);
         contentForm->addRow(binary_);
         contentForm->addRow(multiple_);
@@ -1119,7 +907,7 @@ public:
         tabs->addTab(filterPage, tr("Size, time & attributes"));
 
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-        connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::accepted, this, &OptionsDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
         connect(browse, &QPushButton::clicked, this, [this] {
             const QStringList existingFolders = patterns(roots_->text());
@@ -1151,14 +939,14 @@ public:
         o.contains = contains_->toPlainText();
         o.binary = binary_->isChecked();
         o.multipleValues = multiple_->isChecked();
-        o.multipleAnd = multipleMode_->currentText() == tr("And");
+        o.multipleAnd = multipleMode_->currentIndex() == 1;
         o.caseSensitive = caseSensitive_->isChecked();
         o.minSize = minSize_->value();
         o.maxSize = maxSize_->value();
         o.timeField = timeField_->currentText();
         o.lastMinutes = lastMinutes_->value();
-        o.minTime = QDateTime::fromString(minTime_->text(), Qt::ISODate).toSecsSinceEpoch();
-        o.maxTime = QDateTime::fromString(maxTime_->text(), Qt::ISODate).toSecsSinceEpoch();
+        o.minTime = dateValue(minTime_);
+        o.maxTime = dateValue(maxTime_);
         o.recursive = recursive_->isChecked();
         o.findFiles = findFiles_->isChecked();
         o.findFolders = findFolders_->isChecked();
@@ -1177,6 +965,15 @@ public:
         return o;
     }
 
+protected:
+    void accept() override
+    {
+        if (!validateDate(minTime_, tr("From time"))
+            || !validateDate(maxTime_, tr("To time")))
+            return;
+        QDialog::accept();
+    }
+
 private:
     static QLineEdit *addLine(QFormLayout *layout, const QString &label, const QString &value)
     {
@@ -1184,13 +981,32 @@ private:
         layout->addRow(label, edit);
         return edit;
     }
-    static QSpinBox *sizeSpin(qint64 value)
+    static LongLongSpinBox *sizeSpin(qint64 value)
     {
-        auto *spin = new QSpinBox;
-        spin->setRange(0, 2'000'000'000);
+        auto *spin = new LongLongSpinBox;
+        spin->setRange(0, std::numeric_limits<qint64>::max());
         spin->setSuffix(QObject::tr(" bytes"));
-        spin->setValue(static_cast<int>(std::min<qint64>(value, spin->maximum())));
+        spin->setValue(value);
         return spin;
+    }
+    static qint64 dateValue(const QLineEdit *edit)
+    {
+        qint64 seconds = 0;
+        parseOptionalIsoDate(edit->text(), seconds);
+        return seconds;
+    }
+    bool validateDate(QLineEdit *edit, const QString &label)
+    {
+        qint64 seconds = 0;
+        if (parseOptionalIsoDate(edit->text(), seconds))
+            return true;
+        QMessageBox::warning(
+            this, tr("Invalid date"),
+            tr("%1 must be a valid ISO date and time, for example:\n2026-07-25T20:30:00")
+                .arg(label));
+        edit->setFocus();
+        edit->selectAll();
+        return false;
     }
     static QComboBox *attrCombo(const QString &value)
     {
@@ -1214,8 +1030,8 @@ private:
     QCheckBox *multiple_{};
     QComboBox *multipleMode_{};
     QCheckBox *caseSensitive_{};
-    QSpinBox *minSize_{};
-    QSpinBox *maxSize_{};
+    LongLongSpinBox *minSize_{};
+    LongLongSpinBox *maxSize_{};
     QComboBox *timeField_{};
     QSpinBox *lastMinutes_{};
     QLineEdit *minTime_{};
@@ -1925,7 +1741,7 @@ private slots:
                        this, &MainWindow::showProperties);
         menu.addSeparator();
         menu.addAction(tr("Refresh"), QKeySequence(Qt::Key_F5), this, &MainWindow::refreshSearch);
-        menu.exec(table_->viewport()->mapToGlobal(point));
+        menu.exec(table_->mapToGlobal(point));
     }
 
     void headerContextMenu(const QPoint &point)
@@ -2132,11 +1948,16 @@ private:
     QStringList selectedPaths() const
     {
         QStringList paths;
-        QSet<int> sourceRows;
-        for (const QModelIndex &index : table_->selectionModel()->selectedRows())
-            sourceRows.insert(proxy_->mapToSource(index).row());
-        for (int row : sourceRows)
-            paths.push_back(model_->data(model_->index(row, 0), Qt::UserRole).toString());
+        QModelIndexList selected = table_->selectionModel()->selectedRows();
+        std::sort(selected.begin(), selected.end(),
+                  [](const QModelIndex &left, const QModelIndex &right) {
+            return left.row() < right.row();
+        });
+        for (const QModelIndex &index : selected) {
+            const int sourceRow = proxy_->mapToSource(index).row();
+            paths.push_back(model_->data(
+                model_->index(sourceRow, ResultsModel::Name), Qt::UserRole).toString());
+        }
         return paths;
     }
 

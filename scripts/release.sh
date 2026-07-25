@@ -9,7 +9,7 @@ fi
 version="$1"
 tag="v${version}"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [[ -n "$(git status --porcelain)" ]]; then
   echo "Refusing to release with uncommitted changes." >&2
   exit 1
 fi
