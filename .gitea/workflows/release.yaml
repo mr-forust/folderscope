@@ -131,9 +131,3 @@ jobs:
               -H "Authorization: token ${GITEA_TOKEN}" \
               -F "attachment=@${asset}"
           done
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: folderscope-linux-amd64
-          path: dist/*

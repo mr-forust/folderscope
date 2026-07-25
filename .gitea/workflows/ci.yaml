@@ -30,11 +30,9 @@ jobs:
           status="$?"
           test "$status" = 0 || test "$status" = 124
 
-      - name: Upload Linux binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: folderscope-linux-amd64
-          path: build/searchmyfiles
+      - name: Verify Linux binary
+        shell: bash
+        run: test -x build/searchmyfiles
 
   lint-yaml:
     runs-on: [self-hosted, linux, arch, homelab]
