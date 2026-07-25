@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SearchMyFiles
+Comment=Fast advanced file search
+Exec=searchmyfiles
+Icon=system-search
+Terminal=false
+Categories=Utility;FileTools;
+
