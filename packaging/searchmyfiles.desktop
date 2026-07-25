@@ -3,7 +3,6 @@ Type=Application
 Name=SearchMyFiles
 Comment=Fast advanced file search
 Exec=searchmyfiles
-Icon=system-search
+Icon=searchmyfiles
 Terminal=false
 Categories=Utility;FileTools;
-

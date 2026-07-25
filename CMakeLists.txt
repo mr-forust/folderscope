@@ -26,6 +26,16 @@ qt_add_executable(searchmyfiles
     src/long_long_spin_box.cpp
     src/long_long_spin_box.h
     src/main.cpp
+    src/main_window.h
+    src/main_window.cpp
+    src/search_cache.h
+    src/search_cache.cpp
+    src/search_engine.h
+    src/search_engine.cpp
+    src/results_model.h
+    src/results_model.cpp
+    src/options_dialog.h
+    src/options_dialog.cpp
 )
 
 target_link_libraries(searchmyfiles PRIVATE folderscope_core Qt6::Widgets Qt6::Concurrent Qt6::DBus)
@@ -35,6 +45,8 @@ target_compile_definitions(searchmyfiles PRIVATE FOLDERSCOPE_VERSION="${PROJECT_
 install(TARGETS searchmyfiles RUNTIME DESTINATION bin)
 install(FILES packaging/searchmyfiles.desktop
         DESTINATION share/applications)
+install(FILES packaging/searchmyfiles.svg
+        DESTINATION share/icons/hicolor/scalable/apps)
 
 include(CTest)
 if (BUILD_TESTING)
