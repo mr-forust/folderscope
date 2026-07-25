@@ -5,6 +5,20 @@ All notable changes to FolderScope are documented here.
 The project uses [Semantic Versioning](https://semver.org/). Release tags are
 formatted as `vMAJOR.MINOR.PATCH`.
 
+## [0.2.3] - 2026-07-25
+
+### Added
+
+- Added a persistent cache for duplicate hashes and file-content matches with
+  automatic invalidation when files change.
+- Added cache controls and a context menu on column headers for per-column and
+  global automatic width.
+
+### Changed
+
+- Renamed duplicate result columns to `Duplicate Set` and `Keeper Priority`,
+  with tooltips explaining which copy is preferred.
+
 ## [0.2.2] - 2026-07-25
 
 ### Fixed
@@ -33,3 +47,4 @@ formatted as `vMAJOR.MINOR.PATCH`.
 [0.2.0]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.0
 [0.2.1]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.1
 [0.2.2]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.2
+[0.2.3]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.3
