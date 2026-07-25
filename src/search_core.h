@@ -45,6 +45,8 @@ struct SearchOptions {
     QString hidden = QStringLiteral("Any");
     QString readonly = QStringLiteral("Any");
     QString executable = QStringLiteral("Any");
+
+    bool operator==(const SearchOptions &) const = default;
 };
 
 struct FileRecord {

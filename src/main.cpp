@@ -1287,6 +1287,15 @@ public:
                     .arg(QStringLiteral(FOLDERSCOPE_VERSION)));
         });
 
+        staleSearchWarning_ = new QLabel(
+            tr("⚠ Search settings changed — press F5 to rescan"));
+        staleSearchWarning_->setStyleSheet(
+            QStringLiteral("QLabel { color: #f0b429; font-weight: 600; padding: 0 6px; }"));
+        staleSearchWarning_->setToolTip(
+            tr("Displayed results were produced with different search settings."));
+        staleSearchWarning_->hide();
+        statusBar()->addPermanentWidget(staleSearchWarning_);
+
         progress_ = new QProgressBar;
         progress_->setRange(0, 0);
         progress_->setMinimumWidth(280);
@@ -1515,6 +1524,8 @@ private slots:
         if (isSearching_ || options_.roots.trimmed().isEmpty())
             return;
         isSearching_ = true;
+        lastSearchOptions_ = options_;
+        updateStaleSearchWarning();
         applyDisplayOptions();
         model_->setRows({});
         searchAction_->setEnabled(false);
@@ -1539,6 +1550,7 @@ private slots:
         refreshAction_->setEnabled(true);
         progress_->hide();
         statusBar()->showMessage(message);
+        updateStaleSearchWarning();
         if (autoSizeOnSearchEnd_) {
             table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
             table_->resizeColumnsToContents();
@@ -1995,6 +2007,15 @@ private:
         settings.setValue(QStringLiteral("hidden"), options_.hidden);
         settings.setValue(QStringLiteral("readonly"), options_.readonly);
         settings.setValue(QStringLiteral("executable"), options_.executable);
+        updateStaleSearchWarning();
+    }
+
+    void updateStaleSearchWarning()
+    {
+        if (!staleSearchWarning_)
+            return;
+        staleSearchWarning_->setVisible(
+            lastSearchOptions_.has_value() && options_ != *lastSearchOptions_);
     }
 
     void loadOptions()
@@ -2058,9 +2079,11 @@ private:
     QAction *searchAction_{};
     QAction *stopAction_{};
     QAction *refreshAction_{};
+    QLabel *staleSearchWarning_{};
     QProgressBar *progress_{};
     QThread workerThread_;
     SearchEngine *engine_{};
+    std::optional<SearchOptions> lastSearchOptions_;
     QString findQuery_;
     QString summarySizeUnitName_ = QStringLiteral("Automatic");
     QString doubleClickAction_ = QStringLiteral("Open Properties Window");
