@@ -1,10 +1,15 @@
 #include <QAbstractTableModel>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QClipboard>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusMessage>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -20,6 +25,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -48,6 +54,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -86,6 +93,8 @@ struct SearchOptions {
     QString mode = QStringLiteral("Standard search");
     QString duplicateNameMode = QStringLiteral("All files and folders");
     bool duplicateNameWithoutExtension = false;
+    bool showOnlyDuplicateFiles = true;
+    bool includeSubfoldersInSummary = false;
     QString hidden = QStringLiteral("Any");
     QString readonly = QStringLiteral("Any");
     QString executable = QStringLiteral("Any");
@@ -550,6 +559,10 @@ public slots:
                 for (const auto &record : candidates)
                     if (record.type == QStringLiteral("File") && !duplicatedPaths.contains(record.path))
                         results.push_back(record);
+            } else if (!o.showOnlyDuplicateFiles) {
+                for (const auto &record : candidates)
+                    if (record.type == QStringLiteral("File") && !duplicatedPaths.contains(record.path))
+                        results.push_back(record);
             }
         } else if (o.mode == QStringLiteral("Duplicate names search")) {
             QHash<QString, QVector<FileRecord>> byName;
@@ -592,8 +605,25 @@ public slots:
             }
         } else if (o.mode == QStringLiteral("Summary")) {
             QHash<QString, QVector<FileRecord>> byFolder;
-            for (const auto &record : candidates)
+            for (const auto &record : candidates) {
                 byFolder[record.folder].push_back(record);
+                if (o.includeSubfoldersInSummary) {
+                    QDir parent(record.folder);
+                    while (parent.cdUp()) {
+                        const QString ancestor = parent.absolutePath();
+                        bool belongsToRoot = false;
+                        for (const QString &root : patterns(o.roots)) {
+                            if (ancestor == QDir(root).absolutePath()) {
+                                belongsToRoot = true;
+                                break;
+                            }
+                        }
+                        byFolder[ancestor].push_back(record);
+                        if (belongsToRoot)
+                            break;
+                    }
+                }
+            }
             for (auto it = byFolder.cbegin(); it != byFolder.cend(); ++it) {
                 qint64 total = 0;
                 qint64 totalOnDisk = 0;
@@ -982,6 +1012,7 @@ public:
         setWindowTitle(tr("SearchMyFiles for Linux"));
         resize(1280, 760);
         model_ = new ResultsModel(this);
+        model_->setDisplayOptions(sizeUnit_, showGmt_, markDuplicates_, duplicateColorSet_);
         proxy_ = new QSortFilterProxyModel(this);
         proxy_->setSourceModel(model_);
         proxy_->setSortRole(Qt::EditRole);
@@ -995,10 +1026,18 @@ public:
         table_->horizontalHeader()->setSectionResizeMode(ResultsModel::Name, QHeaderView::ResizeToContents);
         table_->horizontalHeader()->setSectionResizeMode(ResultsModel::Folder, QHeaderView::Stretch);
         setCentralWidget(table_);
+        {
+            QSettings settings;
+            restoreGeometry(settings.value(QStringLiteral("ui/windowGeometry")).toByteArray());
+            table_->horizontalHeader()->restoreState(
+                settings.value(QStringLiteral("ui/headerState")).toByteArray());
+            table_->setShowGrid(showGrid_);
+            table_->viewport()->setAttribute(Qt::WA_AlwaysShowToolTips, showTooltips_);
+        }
 
         auto *toolbar = addToolBar(tr("Main"));
         searchAction_ = toolbar->addAction(QIcon::fromTheme(QStringLiteral("system-search")), tr("Search options…"));
-        searchAction_->setShortcut(Qt::Key_F9);
+        searchAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_F9));
         stopAction_ = toolbar->addAction(QIcon::fromTheme(QStringLiteral("process-stop")), tr("Stop"));
         stopAction_->setShortcut(Qt::Key_Escape);
         stopAction_->setEnabled(false);
@@ -1008,8 +1047,23 @@ public:
         auto *exportAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-save")), tr("Export…"));
         exportAction->setShortcut(QKeySequence::Save);
         auto *openAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("document-open")), tr("Open"));
-        openAction->setShortcut(Qt::Key_Return);
+        openAction->setShortcut(Qt::Key_F9);
         auto *folderAction = toolbar->addAction(QIcon::fromTheme(QStringLiteral("folder-open")), tr("Open folder"));
+        folderAction->setShortcut(Qt::Key_F8);
+        auto *openWithAction = new QAction(tr("Open With…"), this);
+        openWithAction->setShortcut(Qt::Key_F7);
+        auto *selectInFolderAction = new QAction(tr("Select File In File Manager"), this);
+        auto *trashAction = new QAction(tr("Move To Trash"), this);
+        trashAction->setShortcut(Qt::Key_Delete);
+        auto *deleteAction = new QAction(tr("Delete Selected Files"), this);
+        deleteAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
+        auto *renameAction = new QAction(tr("Rename"), this);
+        renameAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_R));
+        auto *propertiesAction = new QAction(tr("Properties"), this);
+        propertiesAction->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Return));
+        for (QAction *action : {openWithAction, selectInFolderAction, trashAction,
+                                deleteAction, renameAction, propertiesAction})
+            addAction(action);
 
         auto *fileMenu = menuBar()->addMenu(tr("&File"));
         fileMenu->addAction(searchAction_);
@@ -1018,8 +1072,15 @@ public:
         fileMenu->addSeparator();
         fileMenu->addAction(openAction);
         fileMenu->addAction(folderAction);
+        fileMenu->addAction(openWithAction);
+        fileMenu->addAction(selectInFolderAction);
+        fileMenu->addSeparator();
+        fileMenu->addAction(trashAction);
+        fileMenu->addAction(deleteAction);
+        fileMenu->addAction(renameAction);
         fileMenu->addSeparator();
         fileMenu->addAction(exportAction);
+        fileMenu->addAction(propertiesAction);
         fileMenu->addSeparator();
         fileMenu->addAction(tr("Exit"), QKeySequence::Quit, this, &QWidget::close);
 
@@ -1035,6 +1096,8 @@ public:
         copyPathsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
         auto *explorerCopyAction = editMenu->addAction(tr("Explorer copy"));
         explorerCopyAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+        auto *explorerCutAction = editMenu->addAction(tr("Explorer cut"));
+        explorerCutAction->setShortcut(QKeySequence::Cut);
         editMenu->addSeparator();
         editMenu->addAction(tr("Select all"), QKeySequence::SelectAll, table_, &QTableView::selectAll);
         auto *deselectAction = editMenu->addAction(tr("Deselect all"));
@@ -1043,25 +1106,128 @@ public:
         auto *viewMenu = menuBar()->addMenu(tr("&View"));
         auto *gridAction = viewMenu->addAction(tr("Show grid lines"));
         gridAction->setCheckable(true);
-        gridAction->setChecked(true);
+        gridAction->setChecked(showGrid_);
         auto *tooltipsAction = viewMenu->addAction(tr("Show tooltips"));
         tooltipsAction->setCheckable(true);
-        tooltipsAction->setChecked(true);
+        tooltipsAction->setChecked(showTooltips_);
         viewMenu->addSeparator();
-        viewMenu->addAction(tr("Auto size columns"), this, [this] {
+        auto *autoSizeAction = viewMenu->addAction(tr("Auto size columns"), this, [this] {
             table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
             table_->resizeColumnsToContents();
+            saveUiSettings();
         });
+        autoSizeAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
         auto *columnsMenu = viewMenu->addMenu(tr("Choose columns"));
         for (int column = 0; column < ResultsModel::ColumnCount; ++column) {
             auto *action = columnsMenu->addAction(
                 model_->headerData(column, Qt::Horizontal, Qt::DisplayRole).toString());
             action->setCheckable(true);
-            action->setChecked(true);
+            action->setChecked(!table_->isColumnHidden(column));
             connect(action, &QAction::toggled, this, [this, column](bool visible) {
                 table_->setColumnHidden(column, !visible);
+                saveUiSettings();
             });
         }
+
+        auto *optionsMenu = menuBar()->addMenu(tr("&Options"));
+        const auto addChoiceMenu = [this, optionsMenu](
+                                       const QString &title,
+                                       const QStringList &choices,
+                                       const QString &selected,
+                                       const std::function<void(const QString &)> &changed) {
+            auto *menu = optionsMenu->addMenu(title);
+            auto *group = new QActionGroup(menu);
+            group->setExclusive(true);
+            for (const QString &choice : choices) {
+                auto *action = menu->addAction(choice);
+                action->setCheckable(true);
+                action->setChecked(choice == selected);
+                group->addAction(action);
+                connect(action, &QAction::triggered, this, [this, choice, changed] {
+                    changed(choice);
+                    saveUiSettings();
+                });
+            }
+            return menu;
+        };
+
+        addChoiceMenu(tr("File Size Unit"),
+                      {tr("Automatic"), tr("Bytes"), tr("KB"), tr("MB"), tr("GB")},
+                      sizeUnitName(), [this](const QString &choice) {
+            sizeUnit_ = sizeUnitFromName(choice);
+            applyDisplayOptions();
+        });
+        addChoiceMenu(tr("Summary File Size Unit"),
+                      {tr("Automatic"), tr("Bytes"), tr("KB"), tr("MB"), tr("GB")},
+                      summarySizeUnitName_, [this](const QString &choice) {
+            summarySizeUnitName_ = choice;
+            if (options_.mode == QStringLiteral("Summary"))
+                applyDisplayOptions();
+        });
+
+        auto *duplicateOptions = optionsMenu->addMenu(tr("Duplicate Search Options"));
+        auto *duplicateOptionsGroup = new QActionGroup(duplicateOptions);
+        auto *showAllDuplicates = duplicateOptions->addAction(tr("Show All Files"));
+        auto *showOnlyDuplicates = duplicateOptions->addAction(tr("Show Only Duplicate Files"));
+        for (QAction *action : {showAllDuplicates, showOnlyDuplicates}) {
+            action->setCheckable(true);
+            duplicateOptionsGroup->addAction(action);
+        }
+        showOnlyDuplicates->setChecked(options_.showOnlyDuplicateFiles);
+        showAllDuplicates->setChecked(!options_.showOnlyDuplicateFiles);
+        connect(showOnlyDuplicates, &QAction::triggered, this, [this] {
+            options_.showOnlyDuplicateFiles = true;
+            saveOptions();
+        });
+        connect(showAllDuplicates, &QAction::triggered, this, [this] {
+            options_.showOnlyDuplicateFiles = false;
+            saveOptions();
+        });
+
+        addChoiceMenu(tr("Duplicate Mark Color Set"),
+                      {tr("Color Set 1"), tr("Color Set 2")},
+                      duplicateColorSet_ == 1 ? tr("Color Set 1") : tr("Color Set 2"),
+                      [this](const QString &choice) {
+            duplicateColorSet_ = choice.endsWith(u'1') ? 1 : 2;
+            applyDisplayOptions();
+        });
+        addChoiceMenu(tr("Double-Click Action"), actionChoices(), doubleClickAction_,
+                      [this](const QString &choice) { doubleClickAction_ = choice; });
+        addChoiceMenu(tr("Enter Key Action"), actionChoices(), enterKeyAction_,
+                      [this](const QString &choice) { enterKeyAction_ = choice; });
+
+        auto addToggle = [this, optionsMenu](const QString &label, bool checked,
+                                             const std::function<void(bool)> &changed) {
+            auto *action = optionsMenu->addAction(label);
+            action->setCheckable(true);
+            action->setChecked(checked);
+            connect(action, &QAction::toggled, this, [this, changed](bool value) {
+                changed(value);
+                saveUiSettings();
+            });
+            return action;
+        };
+        addToggle(tr("Include Subfolders in Summary Totals"), options_.includeSubfoldersInSummary,
+                  [this](bool value) { options_.includeSubfoldersInSummary = value; saveOptions(); });
+        addToggle(tr("Show Time In GMT"), showGmt_, [this](bool value) {
+            showGmt_ = value; applyDisplayOptions();
+        });
+        optionsMenu->addSeparator();
+        addToggle(tr("Mark Duplicate Files"), markDuplicates_, [this](bool value) {
+            markDuplicates_ = value; applyDisplayOptions();
+        });
+        addToggle(tr("Add Header Line To CSV/Tab-Delimited File"), addExportHeader_,
+                  [this](bool value) { addExportHeader_ = value; });
+        addToggle(tr("Retrieve File Owner"), options_.retrieveOwner,
+                  [this](bool value) { options_.retrieveOwner = value; saveOptions(); });
+        addToggle(tr("Accurate Progress (Count Files First)"), options_.accurateProgress,
+                  [this](bool value) { options_.accurateProgress = value; saveOptions(); });
+        addToggle(tr("Set Focus On Search Start"), focusOnSearchStart_,
+                  [this](bool value) { focusOnSearchStart_ = value; });
+        addToggle(tr("Set Focus On Search End"), focusOnSearchEnd_,
+                  [this](bool value) { focusOnSearchEnd_ = value; });
+        addToggle(tr("Auto Size Columns On Search End"), autoSizeOnSearchEnd_,
+                  [this](bool value) { autoSizeOnSearchEnd_ = value; });
 
         menuBar()->addMenu(tr("&Help"))->addAction(tr("About"), this, [this] {
             QMessageBox::about(this, tr("About"),
@@ -1075,7 +1241,7 @@ public:
         progress_->setTextVisible(true);
         progress_->hide();
         statusBar()->addPermanentWidget(progress_);
-        statusBar()->showMessage(tr("Press F9 to configure and start a search"));
+        statusBar()->showMessage(tr("Press Ctrl+F9 to configure and start a search"));
 
         engine_ = new SearchEngine;
         engine_->moveToThread(&workerThread_);
@@ -1115,17 +1281,32 @@ public:
         connect(exportAction, &QAction::triggered, this, &MainWindow::exportResults);
         connect(openAction, &QAction::triggered, this, &MainWindow::openSelected);
         connect(folderAction, &QAction::triggered, this, &MainWindow::openFolder);
+        connect(openWithAction, &QAction::triggered, this, &MainWindow::openWith);
+        connect(selectInFolderAction, &QAction::triggered, this, &MainWindow::selectInFileManager);
+        connect(trashAction, &QAction::triggered, this, &MainWindow::moveToTrash);
+        connect(deleteAction, &QAction::triggered, this, &MainWindow::deleteSelected);
+        connect(renameAction, &QAction::triggered, this, &MainWindow::renameSelected);
+        connect(propertiesAction, &QAction::triggered, this, &MainWindow::showProperties);
         connect(findAction, &QAction::triggered, this, &MainWindow::findText);
         connect(findNextAction, &QAction::triggered, this, &MainWindow::findNext);
         connect(copyInfoAction, &QAction::triggered, this, &MainWindow::copyInformation);
         connect(copyPathsAction, &QAction::triggered, this, &MainWindow::copyPaths);
         connect(explorerCopyAction, &QAction::triggered, this, &MainWindow::explorerCopy);
+        connect(explorerCutAction, &QAction::triggered, this, &MainWindow::explorerCut);
         connect(deselectAction, &QAction::triggered, table_, &QTableView::clearSelection);
-        connect(gridAction, &QAction::toggled, table_, &QTableView::setShowGrid);
-        connect(tooltipsAction, &QAction::toggled, this, [this](bool enabled) {
-            table_->viewport()->setAttribute(Qt::WA_AlwaysShowToolTips, enabled);
+        connect(gridAction, &QAction::toggled, this, [this](bool enabled) {
+            showGrid_ = enabled;
+            table_->setShowGrid(enabled);
+            saveUiSettings();
         });
-        connect(table_, &QTableView::doubleClicked, this, &MainWindow::openSelected);
+        connect(tooltipsAction, &QAction::toggled, this, [this](bool enabled) {
+            showTooltips_ = enabled;
+            table_->viewport()->setAttribute(Qt::WA_AlwaysShowToolTips, enabled);
+            saveUiSettings();
+        });
+        connect(table_, &QTableView::doubleClicked, this, [this] {
+            executeConfiguredAction(doubleClickAction_);
+        });
         connect(table_, &QWidget::customContextMenuRequested, this, &MainWindow::contextMenu);
     }
 
@@ -1134,6 +1315,24 @@ public:
         emit stopRequested();
         workerThread_.quit();
         workerThread_.wait();
+    }
+
+protected:
+    void closeEvent(QCloseEvent *event) override
+    {
+        saveUiSettings();
+        QMainWindow::closeEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && event->modifiers() == Qt::NoModifier) {
+            executeConfiguredAction(enterKeyAction_);
+            event->accept();
+            return;
+        }
+        QMainWindow::keyPressEvent(event);
     }
 
 signals:
@@ -1232,11 +1431,31 @@ private slots:
         QApplication::clipboard()->setMimeData(mime);
     }
 
+    void explorerCut()
+    {
+        const QStringList paths = selectedPaths();
+        if (paths.isEmpty())
+            return;
+        auto *mime = new QMimeData;
+        QList<QUrl> urls;
+        QByteArray gnomeData("cut\n");
+        for (const QString &path : paths) {
+            const QUrl url = QUrl::fromLocalFile(path);
+            urls.push_back(url);
+            gnomeData += url.toEncoded() + '\n';
+        }
+        mime->setUrls(urls);
+        mime->setText(paths.join(u'\n'));
+        mime->setData(QStringLiteral("x-special/gnome-copied-files"), gnomeData);
+        QApplication::clipboard()->setMimeData(mime);
+    }
+
     void startCurrentSearch()
     {
         if (isSearching_ || options_.roots.trimmed().isEmpty())
             return;
         isSearching_ = true;
+        applyDisplayOptions();
         model_->setRows({});
         searchAction_->setEnabled(false);
         stopAction_->setEnabled(true);
@@ -1246,6 +1465,8 @@ private slots:
         progress_->setFormat(tr("Scanning…"));
         setWindowTitle(tr("%1 — %2 — SearchMyFiles for Linux")
                            .arg(options_.roots, options_.mode));
+        if (focusOnSearchStart_)
+            table_->setFocus();
         emit startRequested(options_);
     }
 
@@ -1258,6 +1479,12 @@ private slots:
         refreshAction_->setEnabled(true);
         progress_->hide();
         statusBar()->showMessage(message);
+        if (autoSizeOnSearchEnd_) {
+            table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            table_->resizeColumnsToContents();
+        }
+        if (focusOnSearchEnd_)
+            table_->setFocus();
     }
 
     void openSelected()
@@ -1273,6 +1500,137 @@ private slots:
             QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(paths.front()).absolutePath()));
     }
 
+    void openWith()
+    {
+        const QStringList paths = selectedPaths();
+        if (!paths.isEmpty())
+            QProcess::startDetached(QStringLiteral("gio"), {QStringLiteral("open"), paths.front()});
+    }
+
+    void selectInFileManager()
+    {
+        const QStringList paths = selectedPaths();
+        if (paths.isEmpty())
+            return;
+        QStringList urls;
+        for (const QString &path : paths)
+            urls.push_back(QUrl::fromLocalFile(path).toString());
+        QDBusInterface fileManager(
+            QStringLiteral("org.freedesktop.FileManager1"),
+            QStringLiteral("/org/freedesktop/FileManager1"),
+            QStringLiteral("org.freedesktop.FileManager1"),
+            QDBusConnection::sessionBus());
+        const QDBusMessage reply = fileManager.call(QStringLiteral("ShowItems"), urls, QString{});
+        if (!fileManager.isValid() || reply.type() == QDBusMessage::ErrorMessage)
+            openFolder();
+    }
+
+    void moveToTrash()
+    {
+        const QStringList paths = selectedPaths();
+        if (paths.isEmpty()
+            || QMessageBox::question(
+                   this, tr("Move To Trash"),
+                   tr("Move %1 selected item(s) to Trash?").arg(paths.size()),
+                   QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+        int failed = 0;
+        for (const QString &path : paths)
+            if (!QFile::moveToTrash(path))
+                ++failed;
+        if (failed)
+            QMessageBox::warning(this, tr("Move To Trash"),
+                                 tr("Failed to move %1 item(s) to Trash.").arg(failed));
+        refreshSearch();
+    }
+
+    void deleteSelected()
+    {
+        const QStringList paths = selectedPaths();
+        if (paths.isEmpty()
+            || QMessageBox::warning(
+                   this, tr("Delete Selected Files"),
+                   tr("Permanently delete %1 selected item(s)?\n\nThis cannot be undone.")
+                       .arg(paths.size()),
+                   QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+        int failed = 0;
+        for (const QString &path : paths) {
+            const QFileInfo info(path);
+            const bool removed = info.isDir() ? QDir().rmdir(path) : QFile::remove(path);
+            if (!removed)
+                ++failed;
+        }
+        if (failed)
+            QMessageBox::warning(this, tr("Delete Selected Files"),
+                                 tr("Failed to delete %1 item(s).").arg(failed));
+        refreshSearch();
+    }
+
+    void renameSelected()
+    {
+        const auto record = currentRecord();
+        if (!record)
+            return;
+        bool accepted = false;
+        const QString newName = QInputDialog::getText(
+            this, tr("Rename"), tr("New filename:"), QLineEdit::Normal,
+            record->name, &accepted);
+        if (!accepted || newName.isEmpty() || newName == record->name)
+            return;
+        const QString newPath = QDir(record->folder).filePath(newName);
+        if (!QFile::rename(record->path, newPath))
+            QMessageBox::critical(this, tr("Rename"), tr("Failed to rename this item."));
+        else
+            refreshSearch();
+    }
+
+    void showProperties()
+    {
+        const auto record = currentRecord();
+        if (!record)
+            return;
+        QDialog dialog(this);
+        dialog.setWindowTitle(tr("Properties"));
+        dialog.resize(780, 540);
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *form = new QFormLayout;
+        const auto addValue = [form](const QString &label, const QString &value) {
+            auto *edit = new QLineEdit(value);
+            edit->setReadOnly(true);
+            edit->setCursorPosition(0);
+            form->addRow(label, edit);
+        };
+        const auto date = [this](qint64 timestamp) {
+            if (!timestamp)
+                return QString{};
+            QDateTime value = QDateTime::fromSecsSinceEpoch(timestamp);
+            if (showGmt_)
+                value = value.toUTC();
+            return value.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        };
+        addValue(tr("Filename:"), record->name);
+        addValue(tr("Folder:"), record->folder);
+        addValue(tr("Full Path:"), record->path);
+        addValue(tr("Size:"), QString::number(record->size));
+        addValue(tr("Size On Disk:"), QString::number(record->sizeOnDisk));
+        addValue(tr("Modified Time:"), date(record->modified));
+        addValue(tr("Created Time:"), date(record->created));
+        addValue(tr("Last Accessed Time:"), date(record->accessed));
+        addValue(tr("Entry Modified Time:"), date(record->changed));
+        addValue(tr("Attributes:"), record->attributes);
+        addValue(tr("Extension:"), QFileInfo(record->name).suffix());
+        addValue(tr("Duplicate Number:"), record->group ? QString::number(record->group) : QString{});
+        addValue(tr("Duplicate Group:"),
+                 record->duplicateCopy ? QString::number(record->duplicateCopy) : QString{});
+        addValue(tr("File Owner:"), record->owner);
+        layout->addLayout(form);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        layout->addWidget(buttons);
+        dialog.exec();
+    }
+
     void copyPaths()
     {
         QApplication::clipboard()->setText(selectedPaths().join(u'\n'));
@@ -1281,11 +1639,45 @@ private slots:
     void contextMenu(const QPoint &point)
     {
         QMenu menu(this);
-        menu.addAction(tr("Open"), this, &MainWindow::openSelected);
-        menu.addAction(tr("Open containing folder"), this, &MainWindow::openFolder);
+        menu.addAction(tr("Open Selected File"), QKeySequence(Qt::Key_F9), this, &MainWindow::openSelected);
+        menu.addAction(tr("Open Folder"), QKeySequence(Qt::Key_F8), this, &MainWindow::openFolder);
+        menu.addAction(tr("Open With…"), QKeySequence(Qt::Key_F7), this, &MainWindow::openWith);
+        menu.addAction(tr("Select File In File Manager"), this, &MainWindow::selectInFileManager);
         menu.addSeparator();
-        menu.addAction(tr("Copy paths"), this, &MainWindow::copyPaths);
-        menu.addAction(tr("Export selected…"), this, &MainWindow::exportResults);
+        menu.addAction(tr("Explorer Copy"), QKeySequence(Qt::CTRL | Qt::Key_E),
+                       this, &MainWindow::explorerCopy);
+        menu.addAction(tr("Explorer Cut"), QKeySequence::Cut, this, &MainWindow::explorerCut);
+        menu.addSeparator();
+        menu.addAction(tr("Move To Trash"), QKeySequence(Qt::Key_Delete),
+                       this, &MainWindow::moveToTrash);
+        menu.addAction(tr("Delete Selected Files"), QKeySequence(Qt::SHIFT | Qt::Key_Delete),
+                       this, &MainWindow::deleteSelected);
+        menu.addAction(tr("Rename"), QKeySequence(Qt::CTRL | Qt::Key_R),
+                       this, &MainWindow::renameSelected);
+        menu.addSeparator();
+        menu.addAction(tr("Save Files Information"), QKeySequence::Save,
+                       this, &MainWindow::exportResults);
+        menu.addAction(tr("Copy Files Information"), QKeySequence::Copy,
+                       this, &MainWindow::copyInformation);
+        menu.addSeparator();
+        auto *columns = menu.addMenu(tr("Choose Columns"));
+        for (int column = 0; column < ResultsModel::ColumnCount; ++column) {
+            auto *action = columns->addAction(
+                model_->headerData(column, Qt::Horizontal, Qt::DisplayRole).toString());
+            action->setCheckable(true);
+            action->setChecked(!table_->isColumnHidden(column));
+            connect(action, &QAction::toggled, this, [this, column](bool visible) {
+                table_->setColumnHidden(column, !visible);
+                saveUiSettings();
+            });
+        }
+        menu.addAction(tr("Auto Size Columns"), QKeySequence(Qt::CTRL | Qt::Key_Plus), this, [this] {
+            table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            table_->resizeColumnsToContents();
+        });
+        menu.addSeparator();
+        menu.addAction(tr("Properties"), QKeySequence(Qt::ALT | Qt::Key_Return),
+                       this, &MainWindow::showProperties);
         menu.addSeparator();
         menu.addAction(tr("Refresh"), QKeySequence(Qt::Key_F5), this, &MainWindow::refreshSearch);
         menu.exec(table_->viewport()->mapToGlobal(point));
@@ -1317,13 +1709,21 @@ private slots:
         };
         const auto values = [](const FileRecord &r) {
             const auto date = [](qint64 t) { return t ? QDateTime::fromSecsSinceEpoch(t).toString(Qt::ISODate) : QString{}; };
-            return QStringList{r.name, r.folder, QString::number(r.size), QString::number(r.sizeOnDisk), date(r.modified),
-                               date(r.accessed), date(r.changed), r.type, r.owner, r.attributes,
-                               r.group ? QString::number(r.group) : QString{}, r.path};
+            return QStringList{
+                r.name, r.folder, QString::number(r.size), QString::number(r.sizeOnDisk),
+                date(r.modified), date(r.created), date(r.accessed), date(r.changed),
+                r.attributes, QFileInfo(r.name).suffix(),
+                r.group ? QString::number(r.group) : QString{},
+                r.duplicateCopy ? QString::number(r.duplicateCopy) : QString{},
+                r.type, r.owner, r.path
+            };
         };
-        const QStringList headers{tr("Name"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
-                                  tr("Accessed Time"), tr("Changed Time"), tr("Type"),
-                                  tr("Owner"), tr("Attributes"), tr("Duplicate Number"), tr("Full Path")};
+        const QStringList headers{
+            tr("Filename"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
+            tr("Created Time"), tr("Last Accessed Time"), tr("Entry Modified Time"),
+            tr("Attributes"), tr("Extension"), tr("Duplicate Number"), tr("Duplicate Group"),
+            tr("Type"), tr("File Owner"), tr("Full Path")
+        };
         QTextStream out(&file);
         const QString suffix = QFileInfo(path).suffix().toLower();
         if (suffix == QStringLiteral("json")) {
@@ -1362,7 +1762,8 @@ private slots:
             out << "</SearchResults>";
         } else {
             const QChar separator = suffix == QStringLiteral("csv") ? u',' : u'\t';
-            out << headers.join(separator) << u'\n';
+            if (addExportHeader_)
+                out << headers.join(separator) << u'\n';
             for (const auto &record : rows) {
                 QStringList row = values(record);
                 if (separator == u',')
@@ -1374,6 +1775,77 @@ private slots:
     }
 
 private:
+    std::optional<FileRecord> currentRecord() const
+    {
+        const QModelIndex current = table_->currentIndex();
+        if (!current.isValid())
+            return std::nullopt;
+        const int row = proxy_->mapToSource(current).row();
+        if (row < 0 || row >= model_->rows().size())
+            return std::nullopt;
+        return model_->rows().at(row);
+    }
+
+    QStringList actionChoices() const
+    {
+        return {tr("No Action"), tr("Open Properties Window"), tr("Open Selected File"),
+                tr("Open With…"), tr("Open Folder"), tr("Select File In File Manager")};
+    }
+
+    void executeConfiguredAction(const QString &action)
+    {
+        if (action == tr("Open Properties Window"))
+            showProperties();
+        else if (action == tr("Open Selected File"))
+            openSelected();
+        else if (action == tr("Open With…"))
+            openWith();
+        else if (action == tr("Open Folder"))
+            openFolder();
+        else if (action == tr("Select File In File Manager"))
+            selectInFileManager();
+    }
+
+    QString sizeUnitName() const
+    {
+        static const QStringList units{tr("Automatic"), tr("Bytes"), tr("KB"), tr("MB"), tr("GB")};
+        return units.value(sizeUnit_, units.front());
+    }
+
+    int sizeUnitFromName(const QString &name) const
+    {
+        const QStringList units{tr("Automatic"), tr("Bytes"), tr("KB"), tr("MB"), tr("GB")};
+        return std::max(0, int(units.indexOf(name)));
+    }
+
+    void applyDisplayOptions()
+    {
+        const int unit = options_.mode == QStringLiteral("Summary")
+            ? sizeUnitFromName(summarySizeUnitName_) : sizeUnit_;
+        model_->setDisplayOptions(unit, showGmt_, markDuplicates_, duplicateColorSet_);
+    }
+
+    void saveUiSettings()
+    {
+        QSettings settings;
+        settings.setValue(QStringLiteral("ui/sizeUnit"), sizeUnit_);
+        settings.setValue(QStringLiteral("ui/summarySizeUnit"), summarySizeUnitName_);
+        settings.setValue(QStringLiteral("ui/showGmt"), showGmt_);
+        settings.setValue(QStringLiteral("ui/markDuplicates"), markDuplicates_);
+        settings.setValue(QStringLiteral("ui/duplicateColorSet"), duplicateColorSet_);
+        settings.setValue(QStringLiteral("ui/doubleClickAction"), doubleClickAction_);
+        settings.setValue(QStringLiteral("ui/enterKeyAction"), enterKeyAction_);
+        settings.setValue(QStringLiteral("ui/addExportHeader"), addExportHeader_);
+        settings.setValue(QStringLiteral("ui/focusOnSearchStart"), focusOnSearchStart_);
+        settings.setValue(QStringLiteral("ui/focusOnSearchEnd"), focusOnSearchEnd_);
+        settings.setValue(QStringLiteral("ui/autoSizeOnSearchEnd"), autoSizeOnSearchEnd_);
+        settings.setValue(QStringLiteral("ui/showGrid"), showGrid_);
+        settings.setValue(QStringLiteral("ui/showTooltips"), showTooltips_);
+        settings.setValue(QStringLiteral("ui/windowGeometry"), saveGeometry());
+        if (table_)
+            settings.setValue(QStringLiteral("ui/headerState"), table_->horizontalHeader()->saveState());
+    }
+
     QStringList selectedPaths() const
     {
         QStringList paths;
@@ -1414,6 +1886,8 @@ private:
         settings.setValue(QStringLiteral("mode"), options_.mode);
         settings.setValue(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode);
         settings.setValue(QStringLiteral("duplicateNameWithoutExtension"), options_.duplicateNameWithoutExtension);
+        settings.setValue(QStringLiteral("showOnlyDuplicateFiles"), options_.showOnlyDuplicateFiles);
+        settings.setValue(QStringLiteral("includeSubfoldersInSummary"), options_.includeSubfoldersInSummary);
         settings.setValue(QStringLiteral("hidden"), options_.hidden);
         settings.setValue(QStringLiteral("readonly"), options_.readonly);
         settings.setValue(QStringLiteral("executable"), options_.executable);
@@ -1448,9 +1922,26 @@ private:
         options_.mode = s.value(QStringLiteral("mode"), options_.mode).toString();
         options_.duplicateNameMode = s.value(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode).toString();
         options_.duplicateNameWithoutExtension = s.value(QStringLiteral("duplicateNameWithoutExtension"), false).toBool();
+        options_.showOnlyDuplicateFiles = s.value(QStringLiteral("showOnlyDuplicateFiles"), true).toBool();
+        options_.includeSubfoldersInSummary = s.value(QStringLiteral("includeSubfoldersInSummary"), false).toBool();
         options_.hidden = s.value(QStringLiteral("hidden"), options_.hidden).toString();
         options_.readonly = s.value(QStringLiteral("readonly"), options_.readonly).toString();
         options_.executable = s.value(QStringLiteral("executable"), options_.executable).toString();
+        sizeUnit_ = s.value(QStringLiteral("ui/sizeUnit"), 0).toInt();
+        summarySizeUnitName_ = s.value(QStringLiteral("ui/summarySizeUnit"), tr("Automatic")).toString();
+        showGmt_ = s.value(QStringLiteral("ui/showGmt"), false).toBool();
+        markDuplicates_ = s.value(QStringLiteral("ui/markDuplicates"), true).toBool();
+        duplicateColorSet_ = s.value(QStringLiteral("ui/duplicateColorSet"), 1).toInt();
+        doubleClickAction_ = s.value(
+            QStringLiteral("ui/doubleClickAction"), tr("Open Properties Window")).toString();
+        enterKeyAction_ = s.value(
+            QStringLiteral("ui/enterKeyAction"), tr("Open Selected File")).toString();
+        addExportHeader_ = s.value(QStringLiteral("ui/addExportHeader"), true).toBool();
+        focusOnSearchStart_ = s.value(QStringLiteral("ui/focusOnSearchStart"), true).toBool();
+        focusOnSearchEnd_ = s.value(QStringLiteral("ui/focusOnSearchEnd"), true).toBool();
+        autoSizeOnSearchEnd_ = s.value(QStringLiteral("ui/autoSizeOnSearchEnd"), false).toBool();
+        showGrid_ = s.value(QStringLiteral("ui/showGrid"), true).toBool();
+        showTooltips_ = s.value(QStringLiteral("ui/showTooltips"), true).toBool();
     }
 
     SearchOptions options_;
@@ -1464,6 +1955,19 @@ private:
     QThread workerThread_;
     SearchEngine *engine_{};
     QString findQuery_;
+    QString summarySizeUnitName_ = QStringLiteral("Automatic");
+    QString doubleClickAction_ = QStringLiteral("Open Properties Window");
+    QString enterKeyAction_ = QStringLiteral("Open Selected File");
+    int sizeUnit_ = 0;
+    int duplicateColorSet_ = 1;
+    bool showGmt_ = false;
+    bool markDuplicates_ = true;
+    bool addExportHeader_ = true;
+    bool focusOnSearchStart_ = true;
+    bool focusOnSearchEnd_ = true;
+    bool autoSizeOnSearchEnd_ = false;
+    bool showGrid_ = true;
+    bool showTooltips_ = true;
     bool isSearching_ = false;
 };
 
