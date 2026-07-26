@@ -23,7 +23,7 @@
 MainWindow::MainWindow()
 {
     loadOptions();
-    setWindowTitle(tr("SearchMyFiles for Linux"));
+    setWindowTitle(tr("FolderScope"));
     resize(1280, 760);
     model_ = new ResultsModel(this);
     model_->setDisplayOptions(sizeUnit_, showGmt_, markDuplicates_, duplicateColorSet_);
@@ -507,7 +507,7 @@ void MainWindow::startCurrentSearch()
     progress_->show();
     progress_->setRange(0, 0);
     progress_->setFormat(tr("Scanning…"));
-    setWindowTitle(tr("%1 — %2 — SearchMyFiles for Linux")
+    setWindowTitle(tr("%1 — %2 — FolderScope")
                        .arg(options_.roots, options_.mode));
     if (focusOnSearchStart_)
         table_->setFocus();

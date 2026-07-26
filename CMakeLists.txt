@@ -22,7 +22,7 @@ target_link_libraries(folderscope_core PUBLIC Qt6::Core)
 target_compile_options(folderscope_core PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(folderscope_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-qt_add_executable(searchmyfiles
+qt_add_executable(folderscope
     src/long_long_spin_box.cpp
     src/long_long_spin_box.h
     src/main.cpp
@@ -38,14 +38,14 @@ qt_add_executable(searchmyfiles
     src/options_dialog.cpp
 )
 
-target_link_libraries(searchmyfiles PRIVATE folderscope_core Qt6::Widgets Qt6::Concurrent Qt6::DBus)
-target_compile_options(searchmyfiles PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_definitions(searchmyfiles PRIVATE FOLDERSCOPE_VERSION="${PROJECT_VERSION}")
+target_link_libraries(folderscope PRIVATE folderscope_core Qt6::Widgets Qt6::Concurrent Qt6::DBus)
+target_compile_options(folderscope PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(folderscope PRIVATE FOLDERSCOPE_VERSION="${PROJECT_VERSION}")
 
-install(TARGETS searchmyfiles RUNTIME DESTINATION bin)
-install(FILES packaging/searchmyfiles.desktop
+install(TARGETS folderscope RUNTIME DESTINATION bin)
+install(FILES packaging/folderscope.desktop
         DESTINATION share/applications)
-install(FILES packaging/searchmyfiles.svg
+install(FILES packaging/folderscope.svg
         DESTINATION share/icons/hicolor/scalable/apps)
 
 include(CTest)

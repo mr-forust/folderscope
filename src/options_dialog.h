@@ -29,10 +29,13 @@ protected:
 
 private:
     bool eventFilter(QObject *obj, QEvent *event) override;
-    static QLineEdit *addLine(QFormLayout *layout, const QString &label, const QString &value);
+    static QComboBox *historyCombo(const QString &key, const QString &value);
+    static QComboBox *addHistoryCombo(QFormLayout *layout, const QString &label,
+                                      const QString &key, const QString &value);
     static LongLongSpinBox *sizeSpin(qint64 value);
     static qint64 dateValue(const QLineEdit *edit);
     bool validateDate(QLineEdit *edit, const QString &label);
+    void rememberHistory(const QString &key, const QString &value);
     static QComboBox *attrCombo(const QString &value);
 
     void setupUi(const SearchOptions &o);
@@ -42,12 +45,12 @@ private:
     QComboBox *mode_{};
     QComboBox *duplicateMode_{};
     QCheckBox *duplicateWithoutExtension_{};
-    QLineEdit *roots_{};
-    QLineEdit *fileMasks_{};
-    QLineEdit *subfolderMasks_{};
-    QLineEdit *excludeFiles_{};
-    QLineEdit *excludeFolders_{};
-    QLineEdit *includeFolders_{};
+    QComboBox *roots_{};
+    QComboBox *fileMasks_{};
+    QComboBox *subfolderMasks_{};
+    QComboBox *excludeFiles_{};
+    QComboBox *excludeFolders_{};
+    QComboBox *includeFolders_{};
     QTextEdit *contains_{};
     QCheckBox *binary_{};
     QCheckBox *multiple_{};

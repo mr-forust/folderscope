@@ -8,6 +8,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QSettings>
+#include <QSizePolicy>
 
 #include "long_long_spin_box.h"
 
@@ -87,22 +88,29 @@ void OptionsDialog::setupUi(const SearchOptions &o)
 
     auto *filesPage = new QWidget;
     auto *filesForm = new QFormLayout(filesPage);
-    roots_ = new QLineEdit(o.roots);
-    roots_->setAcceptDrops(true);
+    roots_ = historyCombo(QStringLiteral("roots"), o.roots);
+    roots_->lineEdit()->setAcceptDrops(true);
     roots_->setToolTip(tr("Drop folders here from your file manager"));
-    roots_->installEventFilter(this);
+    roots_->lineEdit()->installEventFilter(this);
     auto *rootRow = new QWidget;
     auto *rootLayout = new QHBoxLayout(rootRow);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->addWidget(roots_);
     auto *browse = new QPushButton(tr("Browse…"));
+    browse->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     rootLayout->addWidget(browse);
+    rootLayout->setStretch(0, 1);
     filesForm->addRow(tr("Base folders (separate with ;):"), rootRow);
-    fileMasks_ = addLine(filesForm, tr("Files wildcard:"), o.fileWildcards);
-    subfolderMasks_ = addLine(filesForm, tr("Subfolders wildcard:"), o.subfolderWildcards);
-    excludeFiles_ = addLine(filesForm, tr("Exclude files:"), o.excludeFiles);
-    excludeFolders_ = addLine(filesForm, tr("Exclude folders:"), o.excludeFolders);
-    includeFolders_ = addLine(filesForm, tr("Include only folders:"), o.includeFolders);
+    fileMasks_ = addHistoryCombo(filesForm, tr("Files wildcard:"),
+                                 QStringLiteral("fileWildcards"), o.fileWildcards);
+    subfolderMasks_ = addHistoryCombo(filesForm, tr("Subfolders wildcard:"),
+                                      QStringLiteral("subfolderWildcards"), o.subfolderWildcards);
+    excludeFiles_ = addHistoryCombo(filesForm, tr("Exclude files:"),
+                                    QStringLiteral("excludeFiles"), o.excludeFiles);
+    excludeFolders_ = addHistoryCombo(filesForm, tr("Exclude folders:"),
+                                      QStringLiteral("excludeFolders"), o.excludeFolders);
+    includeFolders_ = addHistoryCombo(filesForm, tr("Include only folders:"),
+                                      QStringLiteral("includeFolders"), o.includeFolders);
     recursive_ = new QCheckBox(tr("Search subfolders")); recursive_->setChecked(o.recursive);
     findFiles_ = new QCheckBox(tr("Find files")); findFiles_->setChecked(o.findFiles);
     findFolders_ = new QCheckBox(tr("Find folders")); findFolders_->setChecked(o.findFolders);
@@ -183,7 +191,7 @@ void OptionsDialog::setupUi(const SearchOptions &o)
     connect(buttons, &QDialogButtonBox::accepted, this, &OptionsDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(browse, &QPushButton::clicked, this, [this] {
-        const QStringList existingFolders = patterns(roots_->text());
+        const QStringList existingFolders = patterns(roots_->currentText());
         const QString startFolder = existingFolders.isEmpty()
             ? QDir::homePath() : existingFolders.constLast();
         const QString folder = QFileDialog::getExistingDirectory(
@@ -195,7 +203,7 @@ void OptionsDialog::setupUi(const SearchOptions &o)
         const QString cleanPath = QDir::cleanPath(folder);
         if (!folders.contains(cleanPath))
             folders.push_back(cleanPath);
-        roots_->setText(folders.join(u';'));
+        roots_->setEditText(folders.join(u';'));
     });
     layout->addWidget(buttons);
 }
@@ -203,12 +211,12 @@ void OptionsDialog::setupUi(const SearchOptions &o)
 SearchOptions OptionsDialog::options() const
 {
     SearchOptions o;
-    o.roots = roots_->text();
-    o.fileWildcards = fileMasks_->text();
-    o.subfolderWildcards = subfolderMasks_->text();
-    o.excludeFiles = excludeFiles_->text();
-    o.excludeFolders = excludeFolders_->text();
-    o.includeFolders = includeFolders_->text();
+    o.roots = roots_->currentText();
+    o.fileWildcards = fileMasks_->currentText();
+    o.subfolderWildcards = subfolderMasks_->currentText();
+    o.excludeFiles = excludeFiles_->currentText();
+    o.excludeFolders = excludeFolders_->currentText();
+    o.includeFolders = includeFolders_->currentText();
     o.contains = contains_->toPlainText();
     o.binary = binary_->isChecked();
     o.multipleValues = multiple_->isChecked();
@@ -244,14 +252,35 @@ void OptionsDialog::accept()
     if (!validateDate(minTime_, tr("From time"))
         || !validateDate(maxTime_, tr("To time")))
         return;
+    rememberHistory(QStringLiteral("roots"), roots_->currentText());
+    rememberHistory(QStringLiteral("fileWildcards"), fileMasks_->currentText());
+    rememberHistory(QStringLiteral("subfolderWildcards"), subfolderMasks_->currentText());
+    rememberHistory(QStringLiteral("excludeFiles"), excludeFiles_->currentText());
+    rememberHistory(QStringLiteral("excludeFolders"), excludeFolders_->currentText());
+    rememberHistory(QStringLiteral("includeFolders"), includeFolders_->currentText());
     QDialog::accept();
 }
 
-QLineEdit *OptionsDialog::addLine(QFormLayout *layout, const QString &label, const QString &value)
+QComboBox *OptionsDialog::historyCombo(const QString &key, const QString &value)
 {
-    auto *edit = new QLineEdit(value);
-    layout->addRow(label, edit);
-    return edit;
+    auto *combo = new QComboBox;
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setObjectName(QStringLiteral("history%1").arg(key));
+
+    QSettings settings;
+    const QStringList history = settings.value(QStringLiteral("inputHistory/%1").arg(key)).toStringList();
+    combo->addItems(history);
+    combo->setEditText(value);
+    return combo;
+}
+
+QComboBox *OptionsDialog::addHistoryCombo(QFormLayout *layout, const QString &label,
+                                          const QString &key, const QString &value)
+{
+    auto *combo = historyCombo(key, value);
+    layout->addRow(label, combo);
+    return combo;
 }
 
 LongLongSpinBox *OptionsDialog::sizeSpin(qint64 value)
@@ -284,6 +313,22 @@ bool OptionsDialog::validateDate(QLineEdit *edit, const QString &label)
     return false;
 }
 
+void OptionsDialog::rememberHistory(const QString &key, const QString &value)
+{
+    if (value.isEmpty())
+        return;
+
+    QSettings settings;
+    const QString settingsKey = QStringLiteral("inputHistory/%1").arg(key);
+    QStringList history = settings.value(settingsKey).toStringList();
+    history.removeAll(value);
+    history.prepend(value);
+    constexpr qsizetype maxHistoryEntries = 20;
+    if (history.size() > maxHistoryEntries)
+        history.erase(history.begin() + maxHistoryEntries, history.end());
+    settings.setValue(settingsKey, history);
+}
+
 QComboBox *OptionsDialog::attrCombo(const QString &value)
 {
     auto *combo = new QComboBox;
@@ -294,7 +339,7 @@ QComboBox *OptionsDialog::attrCombo(const QString &value)
 
 bool OptionsDialog::eventFilter(QObject *obj, QEvent *event)
 {
-    if (obj == roots_ && event->type() == QEvent::DragEnter) {
+    if (obj == roots_->lineEdit() && event->type() == QEvent::DragEnter) {
         auto *dragEnter = static_cast<QDragEnterEvent *>(event);
         if (dragEnter->mimeData()->hasUrls()) {
             dragEnter->acceptProposedAction();
@@ -302,11 +347,11 @@ bool OptionsDialog::eventFilter(QObject *obj, QEvent *event)
         }
         return false;
     }
-    if (obj == roots_ && event->type() == QEvent::Drop) {
+    if (obj == roots_->lineEdit() && event->type() == QEvent::Drop) {
         auto *drop = static_cast<QDropEvent *>(event);
         if (!drop->mimeData()->hasUrls())
             return false;
-        QStringList folders = patterns(roots_->text());
+        QStringList folders = patterns(roots_->currentText());
         for (const QUrl &url : drop->mimeData()->urls()) {
             if (!url.isLocalFile())
                 continue;
@@ -314,7 +359,7 @@ bool OptionsDialog::eventFilter(QObject *obj, QEvent *event)
             if (QFileInfo::exists(cleanPath) && !folders.contains(cleanPath))
                 folders.append(cleanPath);
         }
-        roots_->setText(folders.join(u';'));
+        roots_->setEditText(folders.join(u';'));
         drop->acceptProposedAction();
         return true;
     }
@@ -401,12 +446,12 @@ void OptionsDialog::loadProfile()
     auto loadInt = [&](const char *key, int def) { return settings.value(QString::fromLatin1(key), def).toInt(); };
     auto loadLong = [&](const char *key, qint64 def) { return settings.value(QString::fromLatin1(key), def).toLongLong(); };
 
-    roots_->setText(load("roots"));
-    fileMasks_->setText(load("fileWildcards"));
-    subfolderMasks_->setText(load("subfolderWildcards"));
-    excludeFiles_->setText(load("excludeFiles"));
-    excludeFolders_->setText(load("excludeFolders"));
-    includeFolders_->setText(load("includeFolders"));
+    roots_->setEditText(load("roots"));
+    fileMasks_->setEditText(load("fileWildcards"));
+    subfolderMasks_->setEditText(load("subfolderWildcards"));
+    excludeFiles_->setEditText(load("excludeFiles"));
+    excludeFolders_->setEditText(load("excludeFolders"));
+    includeFolders_->setEditText(load("includeFolders"));
     contains_->setText(load("contains"));
     binary_->setChecked(loadBool("binary", false));
     multiple_->setChecked(loadBool("multipleValues", false));

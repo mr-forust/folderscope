@@ -5,6 +5,22 @@ All notable changes to FolderScope are documented here.
 The project uses [Semantic Versioning](https://semver.org/). Release tags are
 formatted as `vMAJOR.MINOR.PATCH`.
 
+## [0.3.0] - 2026-07-26
+
+### Added
+
+- Added persistent input history for folder and wildcard fields in Search
+  Options.
+
+### Changed
+
+- Renamed the executable, desktop entry, icon, and application identity from
+  SearchMyFiles to FolderScope.
+- Preserved existing settings and search profiles when migrating to the new
+  application identity.
+- Kept the base-folder browser button compact so the input field uses the
+  available width.
+
 ## [0.2.5] - 2026-07-26
 
 ### Added
@@ -82,3 +98,4 @@ formatted as `vMAJOR.MINOR.PATCH`.
 [0.2.3]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.3
 [0.2.4]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.4
 [0.2.5]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.5
+[0.3.0]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.3.0

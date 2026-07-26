@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=SearchMyFiles
+Name=FolderScope
 Comment=Fast advanced file search
-Exec=searchmyfiles
-Icon=searchmyfiles
+Exec=folderscope
+Icon=folderscope
 Terminal=false
 Categories=Utility;FileTools;

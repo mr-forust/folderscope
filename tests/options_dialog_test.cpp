@@ -1,6 +1,8 @@
 #include "options_dialog.h"
 
 #include <QCheckBox>
+#include <QComboBox>
+#include <QSettings>
 #include <QtTest>
 
 class OptionsDialogTest final : public QObject {
@@ -22,6 +24,35 @@ private slots:
 
         strict->setChecked(false);
         QVERIFY(!dialog.options().strictDuplicateComparison);
+    }
+
+    void remembersInputHistory()
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("inputHistory"));
+
+        SearchOptions options;
+        OptionsDialog first(options);
+        auto *roots = first.findChild<QComboBox *>(QStringLiteral("historyroots"));
+        QVERIFY(roots);
+        roots->setEditText(QStringLiteral("/tmp/first;/tmp/second"));
+        QVERIFY(QMetaObject::invokeMethod(&first, "accept"));
+
+        QCOMPARE(settings.value(QStringLiteral("inputHistory/roots")).toStringList(),
+                 QStringList{QStringLiteral("/tmp/first;/tmp/second")});
+
+        OptionsDialog second(options);
+        auto *history = second.findChild<QComboBox *>(QStringLiteral("historyroots"));
+        QVERIFY(history);
+        QCOMPARE(history->itemText(0), QStringLiteral("/tmp/first;/tmp/second"));
+
+        history->setEditText(QStringLiteral("/tmp/new"));
+        QVERIFY(QMetaObject::invokeMethod(&second, "accept"));
+        QCOMPARE(settings.value(QStringLiteral("inputHistory/roots")).toStringList(),
+                 (QStringList{QStringLiteral("/tmp/new"),
+                              QStringLiteral("/tmp/first;/tmp/second")}));
+
+        settings.remove(QStringLiteral("inputHistory"));
     }
 };
 
