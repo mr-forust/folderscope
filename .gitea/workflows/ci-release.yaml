@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          QT_QPA_PLATFORM=offscreen timeout 3s ./build/searchmyfiles
+          QT_QPA_PLATFORM=offscreen timeout 3s ./build/folderscope
           status="$?"
           test "$status" = 0 || test "$status" = 124
 
