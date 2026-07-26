@@ -59,6 +59,43 @@ if (BUILD_TESTING)
     target_compile_options(search_core_tests PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME search-core COMMAND search_core_tests)
 
+    qt_add_executable(search_cache_tests
+        src/search_cache.cpp
+        src/search_cache.h
+        tests/search_cache_test.cpp
+    )
+    target_link_libraries(search_cache_tests PRIVATE folderscope_core Qt6::Test)
+    target_compile_options(search_cache_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_include_directories(search_cache_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME search-cache COMMAND search_cache_tests)
+
+    qt_add_executable(search_engine_tests
+        src/search_cache.cpp
+        src/search_cache.h
+        src/search_engine.cpp
+        src/search_engine.h
+        tests/search_engine_test.cpp
+    )
+    target_link_libraries(search_engine_tests PRIVATE
+        folderscope_core Qt6::Concurrent Qt6::Test)
+    target_compile_options(search_engine_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_include_directories(search_engine_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME search-engine COMMAND search_engine_tests)
+
+    qt_add_executable(options_dialog_tests
+        src/long_long_spin_box.cpp
+        src/long_long_spin_box.h
+        src/options_dialog.cpp
+        src/options_dialog.h
+        tests/options_dialog_test.cpp
+    )
+    target_link_libraries(options_dialog_tests PRIVATE
+        folderscope_core Qt6::Widgets Qt6::Test)
+    target_compile_options(options_dialog_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_include_directories(options_dialog_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME options-dialog COMMAND options_dialog_tests)
+    set_tests_properties(options-dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     qt_add_executable(long_long_spin_box_tests
         src/long_long_spin_box.cpp
         src/long_long_spin_box.h

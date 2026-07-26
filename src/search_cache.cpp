@@ -10,12 +10,39 @@
 #include <algorithm>
 #include <utility>
 
-SearchCache::SearchCache()
+SearchCache::SearchCache(QString path)
 {
-    const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    QDir().mkpath(cacheRoot);
-    path_ = QDir(cacheRoot).filePath(QStringLiteral("search-cache-v1.dat"));
+    if (path.isEmpty()) {
+        const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir().mkpath(cacheRoot);
+        path_ = QDir(cacheRoot).filePath(QStringLiteral("search-cache-v1.dat"));
+    } else {
+        path_ = std::move(path);
+    }
     load();
+}
+
+bool SearchCache::findSampleHash(const FileRecord &record, QByteArray &digest)
+{
+    if (!enabled_)
+        return false;
+    QMutexLocker lock(&mutex_);
+    auto it = entries_.find(record.path);
+    if (it == entries_.end() || !signatureMatches(*it, record)
+        || it->sampleSha256.isEmpty())
+        return false;
+    it->lastUsed = QDateTime::currentSecsSinceEpoch();
+    digest = it->sampleSha256;
+    return true;
+}
+
+void SearchCache::storeSampleHash(const FileRecord &record, const QByteArray &digest)
+{
+    if (!enabled_ || digest.isEmpty())
+        return;
+    QMutexLocker lock(&mutex_);
+    SearchCacheEntry &entry = currentEntry(record);
+    entry.sampleSha256 = digest;
 }
 
 bool SearchCache::findHash(const FileRecord &record, QByteArray &digest)
@@ -75,9 +102,10 @@ void SearchCache::save()
         return;
     QDataStream stream(&file);
     stream.setVersion(QDataStream::Qt_6_0);
-    stream << quint32(0x46534348) << quint32(1) << quint32(entries_.size());
+    stream << quint32(0x46534348) << quint32(2) << quint32(entries_.size());
     for (auto it = entries_.cbegin(); it != entries_.cend(); ++it) {
-        stream << it.key() << it->size << it->modified << it->lastUsed << it->sha256;
+        stream << it.key() << it->size << it->modifiedNs << it->device << it->inode
+               << it->lastUsed << it->sampleSha256 << it->sha256;
         stream << quint32(it->contentMatches.size());
         for (auto match = it->contentMatches.cbegin(); match != it->contentMatches.cend(); ++match)
             stream << match.key() << match.value();
@@ -95,7 +123,10 @@ void SearchCache::clear()
 
 bool SearchCache::signatureMatches(const SearchCacheEntry &entry, const FileRecord &record)
 {
-    return entry.size == record.size && entry.modified == record.modified;
+    return entry.size == record.size
+        && entry.modifiedNs == record.modifiedNs
+        && entry.device == record.device
+        && entry.inode == record.inode;
 }
 
 SearchCacheEntry &SearchCache::currentEntry(const FileRecord &record)
@@ -104,7 +135,9 @@ SearchCacheEntry &SearchCache::currentEntry(const FileRecord &record)
     if (!signatureMatches(entry, record)) {
         entry = {};
         entry.size = record.size;
-        entry.modified = record.modified;
+        entry.modifiedNs = record.modifiedNs;
+        entry.device = record.device;
+        entry.inode = record.inode;
     }
     entry.lastUsed = QDateTime::currentSecsSinceEpoch();
     return entry;
@@ -121,13 +154,14 @@ void SearchCache::load()
     quint32 version = 0;
     quint32 count = 0;
     stream >> magic >> version >> count;
-    if (magic != 0x46534348 || version != 1 || count > 200'000)
+    if (magic != 0x46534348 || version != 2 || count > 200'000)
         return;
     for (quint32 index = 0; index < count && stream.status() == QDataStream::Ok; ++index) {
         QString path;
         SearchCacheEntry entry;
         quint32 contentCount = 0;
-        stream >> path >> entry.size >> entry.modified >> entry.lastUsed >> entry.sha256;
+        stream >> path >> entry.size >> entry.modifiedNs >> entry.device >> entry.inode
+               >> entry.lastUsed >> entry.sampleSha256 >> entry.sha256;
         stream >> contentCount;
         if (contentCount > 256)
             return;

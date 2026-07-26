@@ -5,6 +5,21 @@ All notable changes to FolderScope are documented here.
 The project uses [Semantic Versioning](https://semver.org/). Release tags are
 formatted as `vMAJOR.MINOR.PATCH`.
 
+## [0.2.5] - 2026-07-26
+
+### Added
+
+- Added an optional strict byte-by-byte verification mode for duplicate files.
+
+### Changed
+
+- Accelerated duplicate detection with size grouping, sampled block hashes, and
+  full SHA-256 hashing only for remaining candidates.
+- Normalized overlapping search roots and deduplicated file candidates so a
+  path cannot be compared with itself.
+- Strengthened persistent cache invalidation with nanosecond timestamps and
+  filesystem identity.
+
 ## [0.2.4] - 2026-07-25
 
 ### Fixed
@@ -66,3 +81,4 @@ formatted as `vMAJOR.MINOR.PATCH`.
 [0.2.2]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.2
 [0.2.3]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.3
 [0.2.4]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.4
+[0.2.5]: https://gitea.forust.xyz/forust/folderscope/releases/tag/v0.2.5

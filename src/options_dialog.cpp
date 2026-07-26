@@ -112,6 +112,11 @@ void OptionsDialog::setupUi(const SearchOptions &o)
     accurateProgress_->setChecked(o.accurateProgress);
     useCache_ = new QCheckBox(tr("Use persistent cache for hashes and content searches"));
     useCache_->setChecked(o.useCache);
+    strictDuplicateComparison_ =
+        new QCheckBox(tr("Strict duplicate comparison (byte by byte)"));
+    strictDuplicateComparison_->setObjectName(
+        QStringLiteral("strictDuplicateComparison"));
+    strictDuplicateComparison_->setChecked(o.strictDuplicateComparison);
     maxDepth_ = new QSpinBox; maxDepth_->setRange(0, 1024); maxDepth_->setValue(o.maxDepth);
     maxDepth_->setSpecialValueText(tr("Unlimited"));
     maxResults_ = new QSpinBox; maxResults_->setRange(0, 100'000'000); maxResults_->setValue(o.maxResults);
@@ -124,6 +129,7 @@ void OptionsDialog::setupUi(const SearchOptions &o)
     filesForm->addRow(retrieveOwner_);
     filesForm->addRow(accurateProgress_);
     filesForm->addRow(useCache_);
+    filesForm->addRow(strictDuplicateComparison_);
     filesForm->addRow(tr("Stop after finding:"), maxResults_);
     tabs->addTab(filesPage, tr("Files & folders"));
 
@@ -221,6 +227,7 @@ SearchOptions OptionsDialog::options() const
     o.retrieveOwner = retrieveOwner_->isChecked();
     o.accurateProgress = accurateProgress_->isChecked();
     o.useCache = useCache_->isChecked();
+    o.strictDuplicateComparison = strictDuplicateComparison_->isChecked();
     o.maxDepth = maxDepth_->value();
     o.maxResults = maxResults_->value();
     o.mode = mode_->currentText();
@@ -360,6 +367,7 @@ void OptionsDialog::saveProfile()
     saveBool("accurateProgress", opt.accurateProgress);
     saveBool("useCache", opt.useCache);
     saveBool("duplicateNameWithoutExtension", opt.duplicateNameWithoutExtension);
+    saveBool("strictDuplicateComparison", opt.strictDuplicateComparison);
 
     saveInt("lastMinutes", opt.lastMinutes);
     saveInt("maxDepth", opt.maxDepth);
@@ -419,6 +427,8 @@ void OptionsDialog::loadProfile()
     retrieveOwner_->setChecked(loadBool("retrieveOwner", false));
     accurateProgress_->setChecked(loadBool("accurateProgress", true));
     useCache_->setChecked(loadBool("useCache", true));
+    strictDuplicateComparison_->setChecked(
+        loadBool("strictDuplicateComparison", false));
     maxDepth_->setValue(loadInt("maxDepth", 0));
     maxResults_->setValue(loadInt("maxResults", 0));
     mode_->setCurrentText(load("mode"));

@@ -12,6 +12,7 @@ single window.
 - search across multiple root folders;
 - filter by name patterns, size, timestamps, and file attributes;
 - inspect duplicate files and files with matching names;
+- optionally verify duplicate matches byte by byte in strict mode;
 - search inside file contents, including text and hex;
 - reuse a persistent, automatically invalidated cache for content matches and
   duplicate hashes;

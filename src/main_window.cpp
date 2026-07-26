@@ -977,6 +977,8 @@ void MainWindow::saveOptions()
     settings.setValue(QStringLiteral("mode"), options_.mode);
     settings.setValue(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode);
     settings.setValue(QStringLiteral("duplicateNameWithoutExtension"), options_.duplicateNameWithoutExtension);
+    settings.setValue(QStringLiteral("strictDuplicateComparison"),
+                      options_.strictDuplicateComparison);
     settings.setValue(QStringLiteral("showDuplicateCopiesOnly"), options_.showDuplicateCopiesOnly);
     settings.setValue(QStringLiteral("includeSubfoldersInSummary"), options_.includeSubfoldersInSummary);
     settings.setValue(QStringLiteral("hidden"), options_.hidden);
@@ -1023,6 +1025,8 @@ void MainWindow::loadOptions()
     options_.mode = s.value(QStringLiteral("mode"), options_.mode).toString();
     options_.duplicateNameMode = s.value(QStringLiteral("duplicateNameMode"), options_.duplicateNameMode).toString();
     options_.duplicateNameWithoutExtension = s.value(QStringLiteral("duplicateNameWithoutExtension"), false).toBool();
+    options_.strictDuplicateComparison =
+        s.value(QStringLiteral("strictDuplicateComparison"), false).toBool();
     options_.showDuplicateCopiesOnly =
         s.value(QStringLiteral("showDuplicateCopiesOnly"),
                 s.value(QStringLiteral("showOnlyDuplicateFiles"), true)).toBool();

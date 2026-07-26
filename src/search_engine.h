@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <utility>
 
 #include "search_core.h"
 #include "search_cache.h"
@@ -13,7 +14,8 @@
 class SearchEngine final : public QObject {
     Q_OBJECT
 public:
-    explicit SearchEngine(QObject *parent = nullptr) : QObject(parent) {}
+    explicit SearchEngine(QObject *parent = nullptr, QString cachePath = {})
+        : QObject(parent), cache_(std::move(cachePath)) {}
 
 public slots:
     void stop() { cancelled_.store(true, std::memory_order_relaxed); }
@@ -32,6 +34,7 @@ signals:
     void finished(const QVector<FileRecord> &results, const QString &message);
 
 private:
+    QByteArray cachedSampleSha256(const FileRecord &record);
     QByteArray cachedSha256(const FileRecord &record);
     bool cachedFileContains(const FileRecord &record, const SearchOptions &o);
 

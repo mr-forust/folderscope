@@ -23,7 +23,7 @@ QVariant ResultsModel::headerData(int section, Qt::Orientation orientation, int 
         if (section == DuplicateNumber)
             return tr("Identifies one set of identical files");
         if (section == DuplicateGroup)
-            return tr("Order based on the base-folder list; 1 = preferred copy to keep");
+            return tr("Most-specific base folder wins; ties use newer files, then path. 1 = preferred copy to keep");
         return {};
     }
     if (role != Qt::DisplayRole)

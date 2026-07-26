@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QThread>
+#include <QThreadPool>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -17,6 +18,27 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+namespace {
+struct HashedRecord {
+    QByteArray digest;
+    FileRecord record;
+};
+
+bool keepFirst(const FileRecord &left, const FileRecord &right,
+               const QStringList &priorityRoots)
+{
+    const int leftRoot = preferredRootIndex(left.path, priorityRoots);
+    const int rightRoot = preferredRootIndex(right.path, priorityRoots);
+    const int leftPriority = leftRoot < 0 ? priorityRoots.size() : leftRoot;
+    const int rightPriority = rightRoot < 0 ? priorityRoots.size() : rightRoot;
+    if (leftPriority != rightPriority)
+        return leftPriority < rightPriority;
+    if (left.modified != right.modified)
+        return left.modified > right.modified;
+    return left.path < right.path;
+}
+}
 
 void SearchEngine::search(const SearchOptions &o)
 {
@@ -33,6 +55,8 @@ void SearchEngine::search(const SearchOptions &o)
     cacheMisses_.store(0, std::memory_order_relaxed);
     const auto started = std::chrono::steady_clock::now();
     QVector<FileRecord> candidates;
+    QSet<QString> candidatePaths;
+    const EffectiveRoots roots = effectiveSearchRoots(o);
     const Qt::CaseSensitivity cs = o.caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
     const QStringList fileMasks = patterns(o.fileWildcards).isEmpty()
         ? QStringList{QStringLiteral("*")} : patterns(o.fileWildcards);
@@ -46,7 +70,7 @@ void SearchEngine::search(const SearchOptions &o)
 
     if (o.accurateProgress) {
         emit phaseProgress(tr("Counting files"), 0, 0);
-        for (const QString &rootText : patterns(o.roots)) {
+        for (const QString &rootText : roots.paths) {
             if (cancelled_.load(std::memory_order_relaxed))
                 break;
             std::error_code ec;
@@ -84,7 +108,7 @@ void SearchEngine::search(const SearchOptions &o)
         emit phaseProgress(tr("Scanning files"), 0, totalEntries);
     }
 
-    for (const QString &rootText : patterns(o.roots)) {
+    for (const QString &rootText : roots.paths) {
         if (cancelled_.load(std::memory_order_relaxed))
             break;
         std::error_code ec;
@@ -96,7 +120,8 @@ void SearchEngine::search(const SearchOptions &o)
         auto process = [&](const fs::directory_entry &entry, const fs::path &baseRoot) {
             if (cancelled_.load(std::memory_order_relaxed))
                 return;
-            const QString path = QString::fromStdString(entry.path().string());
+            const QString path = QDir::cleanPath(QFileInfo(
+                QString::fromStdString(entry.path().string())).absoluteFilePath());
             const QString name = QString::fromStdString(entry.path().filename().string());
             const bool isDir = entry.is_directory(ec);
             if ((isDir && !o.findFolders) || (!isDir && !o.findFiles))
@@ -147,6 +172,9 @@ void SearchEngine::search(const SearchOptions &o)
                 || !attrMatches(o.readonly, readOnly)
                 || !attrMatches(o.executable, executable))
                 return;
+            if (candidatePaths.contains(path))
+                return;
+            candidatePaths.insert(path);
 
             QString attrs;
             attrs += isDir ? u'd' : u'-';
@@ -160,6 +188,8 @@ void SearchEngine::search(const SearchOptions &o)
                 st.st_mtime,
                 QFileInfo(path).birthTime().isValid() ? QFileInfo(path).birthTime().toSecsSinceEpoch() : 0,
                 st.st_atime, st.st_ctime,
+                qint64(st.st_mtim.tv_sec) * 1'000'000'000LL + st.st_mtim.tv_nsec,
+                quint64(st.st_dev), quint64(st.st_ino),
                 isDir ? QStringLiteral("Folder") : QStringLiteral("File"),
                 o.retrieveOwner ? ownerName(st.st_uid) : QString{}, attrs, 0, 0
             });
@@ -237,68 +267,122 @@ void SearchEngine::search(const SearchOptions &o)
             candidates.resize(o.maxResults);
     }
 
+    QThreadPool hashPool;
+    const int idealThreads = QThread::idealThreadCount();
+    hashPool.setMaxThreadCount(std::clamp(
+        idealThreads > 0 ? idealThreads / 2 : 1, 1, 4));
+
     QVector<FileRecord> results;
     if (o.mode == QStringLiteral("Duplicates search")
         || o.mode == QStringLiteral("Non-Duplicates search")) {
         std::unordered_map<qint64, QVector<FileRecord>> bySize;
-        for (const auto &record : candidates)
-            if (record.type == QStringLiteral("File"))
+        QSet<QString> duplicateInputPaths;
+        for (const auto &record : candidates) {
+            if (record.type == QStringLiteral("File")
+                && !duplicateInputPaths.contains(record.path)) {
+                duplicateInputPaths.insert(record.path);
                 bySize[record.size].push_back(record);
-        quint64 hashTotal = 0;
-        for (const auto &[size, records] : bySize) {
-            Q_UNUSED(size);
-            if (records.size() > 1)
-                hashTotal += records.size();
+            }
         }
-        std::atomic<quint64> hashed = 0;
-        if (hashTotal)
-            emit phaseProgress(tr("Checking duplicates"), 0, hashTotal);
-        int group = 1;
-        QSet<QString> duplicatedPaths;
-        for (auto &[size, sameSize] : bySize) {
-            if (cancelled_.load(std::memory_order_relaxed))
-                break;
-            Q_UNUSED(size);
-            if (sameSize.size() < 2)
+
+        QVector<FileRecord> sampleCandidates;
+        QVector<FileRecord> fullHashCandidates;
+        for (const auto &[size, records] : bySize) {
+            if (records.size() < 2)
                 continue;
-            auto hashes = QtConcurrent::blockingMapped(sameSize, [this, &hashed, hashTotal](const FileRecord &r) {
-                auto result = std::pair<QByteArray, FileRecord>{cachedSha256(r), r};
-                const quint64 done = hashed.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (done == hashTotal || done % 16 == 0)
-                    emit phaseProgress(tr("Checking duplicates"), done, hashTotal);
+            if (size > duplicateSampleThreshold)
+                sampleCandidates += records;
+            else
+                fullHashCandidates += records;
+        }
+
+        std::atomic<qsizetype> sampled = 0;
+        const qsizetype sampleTotal = sampleCandidates.size();
+        if (sampleTotal)
+            emit phaseProgress(tr("Sampling duplicate candidates"), 0, sampleTotal);
+        const auto samples = QtConcurrent::blockingMapped(
+            &hashPool, sampleCandidates,
+            [this, &sampled, sampleTotal](const FileRecord &record) {
+                HashedRecord result{cachedSampleSha256(record), record};
+                const qsizetype done = sampled.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (done == sampleTotal || done % 16 == 0)
+                    emit phaseProgress(tr("Sampling duplicate candidates"), done, sampleTotal);
                 return result;
             });
-            if (cancelled_.load(std::memory_order_relaxed))
-                break;
-            QHash<QByteArray, QVector<FileRecord>> sameHash;
-            for (auto &[hash, record] : hashes)
-                if (!hash.isEmpty())
-                    sameHash[hash].push_back(record);
-            for (const auto &hashCandidates : sameHash) {
+        if (finishIfCancelled())
+            return;
+
+        QHash<qint64, QHash<QByteArray, QVector<FileRecord>>> bySample;
+        for (const auto &sample : samples)
+            if (!sample.digest.isEmpty())
+                bySample[sample.record.size][sample.digest].push_back(sample.record);
+        for (const auto &sameSize : bySample)
+            for (const auto &sameSample : sameSize)
+                if (sameSample.size() > 1)
+                    fullHashCandidates += sameSample;
+
+        std::atomic<qsizetype> hashed = 0;
+        const qsizetype hashTotal = fullHashCandidates.size();
+        if (hashTotal)
+            emit phaseProgress(tr("Hashing duplicate candidates"), 0, hashTotal);
+        const auto hashes = QtConcurrent::blockingMapped(
+            &hashPool, fullHashCandidates,
+            [this, &hashed, hashTotal](const FileRecord &record) {
+                HashedRecord result{cachedSha256(record), record};
+                const qsizetype done = hashed.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (done == hashTotal || done % 16 == 0)
+                    emit phaseProgress(tr("Hashing duplicate candidates"), done, hashTotal);
+                return result;
+            });
+        if (finishIfCancelled())
+            return;
+
+        QHash<qint64, QHash<QByteArray, QVector<FileRecord>>> byHash;
+        for (const auto &hash : hashes)
+            if (!hash.digest.isEmpty())
+                byHash[hash.record.size][hash.digest].push_back(hash.record);
+
+        int group = 1;
+        QSet<QString> duplicatedPaths;
+        for (const auto &sameSize : byHash) {
+            for (const auto &hashCandidates : sameSize) {
                 if (cancelled_.load(std::memory_order_relaxed))
                     break;
                 if (hashCandidates.size() < 2)
                     continue;
                 QVector<QVector<FileRecord>> exactGroups;
-                for (const auto &record : hashCandidates) {
-                    if (cancelled_.load(std::memory_order_relaxed))
-                        break;
-                    bool placed = false;
-                    for (auto &exact : exactGroups) {
-                        if (filesEqual(exact.front().path, record.path, &cancelled_)) {
-                            exact.push_back(record);
-                            placed = true;
+                if (!o.strictDuplicateComparison) {
+                    exactGroups.push_back(hashCandidates);
+                } else {
+                    for (const auto &record : hashCandidates) {
+                        if (cancelled_.load(std::memory_order_relaxed))
                             break;
+                        bool placed = false;
+                        for (auto &exact : exactGroups) {
+                            if (fileSignatureMatches(exact.front())
+                                && fileSignatureMatches(record)
+                                && filesEqual(exact.front().path, record.path, &cancelled_)
+                                && fileSignatureMatches(exact.front())
+                                && fileSignatureMatches(record)) {
+                                exact.push_back(record);
+                                placed = true;
+                                break;
+                            }
                         }
+                        if (!placed)
+                            exactGroups.push_back({record});
                     }
-                    if (!placed)
-                        exactGroups.push_back({record});
                 }
                 for (auto &exact : exactGroups) {
                     if (cancelled_.load(std::memory_order_relaxed))
                         break;
                     if (exact.size() < 2)
                         continue;
+                    std::stable_sort(exact.begin(), exact.end(),
+                                     [&roots](const FileRecord &left,
+                                              const FileRecord &right) {
+                        return keepFirst(left, right, roots.priorityPaths);
+                    });
                     int duplicateCopy = 1;
                     for (auto &record : exact) {
                         record.group = group;
@@ -343,13 +427,50 @@ void SearchEngine::search(const SearchOptions &o)
                     [](const FileRecord &r) { return r.type != QStringLiteral("File"); }), sameName.end());
             if (sameName.size() < 2)
                 continue;
+            std::stable_sort(sameName.begin(), sameName.end(),
+                             [&roots](const FileRecord &left,
+                                      const FileRecord &right) {
+                return keepFirst(left, right, roots.priorityPaths);
+            });
             if (o.duplicateNameMode.contains(QStringLiteral("identical"), Qt::CaseInsensitive)) {
-                const QByteArray firstHash = cachedSha256(sameName.front());
-                bool identical = !firstHash.isEmpty();
-                for (qsizetype i = 1; identical && i < sameName.size(); ++i) {
-                    identical = cachedSha256(sameName[i]) == firstHash
-                        && filesEqual(
-                            sameName.front().path, sameName[i].path, &cancelled_);
+                bool identical = std::all_of(
+                    sameName.cbegin(), sameName.cend(),
+                    [&sameName](const FileRecord &record) {
+                        return record.size == sameName.front().size;
+                    });
+                if (identical && sameName.front().size > duplicateSampleThreshold) {
+                    const auto samples = QtConcurrent::blockingMapped(
+                        &hashPool, sameName, [this](const FileRecord &record) {
+                            return cachedSampleSha256(record);
+                        });
+                    identical = !samples.isEmpty() && !samples.front().isEmpty()
+                        && std::all_of(samples.cbegin(), samples.cend(),
+                            [&samples](const QByteArray &digest) {
+                                return digest == samples.front();
+                            });
+                }
+                QVector<QByteArray> hashes;
+                if (identical) {
+                    hashes = QtConcurrent::blockingMapped(
+                        &hashPool, sameName, [this](const FileRecord &record) {
+                            return cachedSha256(record);
+                        });
+                    identical = !hashes.isEmpty() && !hashes.front().isEmpty()
+                        && std::all_of(hashes.cbegin(), hashes.cend(),
+                            [&hashes](const QByteArray &digest) {
+                                return digest == hashes.front();
+                            });
+                }
+                if (identical && o.strictDuplicateComparison) {
+                    const FileRecord &first = sameName.front();
+                    for (qsizetype index = 1; identical && index < sameName.size(); ++index) {
+                        const FileRecord &record = sameName[index];
+                        identical = fileSignatureMatches(first)
+                            && fileSignatureMatches(record)
+                            && filesEqual(first.path, record.path, &cancelled_)
+                            && fileSignatureMatches(first)
+                            && fileSignatureMatches(record);
+                    }
                 }
                 const bool wantsNonIdentical = o.duplicateNameMode.startsWith(QStringLiteral("Only non"));
                 if (identical == wantsNonIdentical)
@@ -376,7 +497,7 @@ void SearchEngine::search(const SearchOptions &o)
                 while (parent.cdUp()) {
                     const QString ancestor = parent.absolutePath();
                     bool belongsToRoot = false;
-                    for (const QString &root : patterns(o.roots)) {
+                    for (const QString &root : roots.paths) {
                         if (ancestor == QDir(root).absolutePath()) {
                             belongsToRoot = true;
                             break;
@@ -401,8 +522,8 @@ void SearchEngine::search(const SearchOptions &o)
             }
             const QFileInfo info(it.key());
             results.push_back({it.key(), info.fileName(), info.absolutePath(), total, totalOnDisk,
-                               newest, 0, 0, 0, tr("%1 files").arg(it.value().size()),
-                               {}, {}, 0, 0});
+                               newest, 0, 0, 0, 0, 0, 0,
+                               tr("%1 files").arg(it.value().size()), {}, {}, 0, 0});
         }
         if (finishIfCancelled())
             return;
@@ -415,21 +536,42 @@ void SearchEngine::search(const SearchOptions &o)
     const double seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - started).count();
     cache_.save();
-    emit finished(results, tr("%1 results, %2 entries scanned in %3 seconds; cache: %4 hits")
-                              .arg(results.size()).arg(scanned).arg(seconds, 0, 'f', 2)
-                              .arg(cacheHits_.load(std::memory_order_relaxed)));
+    QString message = tr("%1 results, %2 entries scanned in %3 seconds; cache: %4 hits")
+                          .arg(results.size()).arg(scanned).arg(seconds, 0, 'f', 2)
+                          .arg(cacheHits_.load(std::memory_order_relaxed));
+    if (roots.skipped > 0)
+        message += tr("; %1 redundant roots skipped").arg(roots.skipped);
+    emit finished(results, message);
+}
+
+QByteArray SearchEngine::cachedSampleSha256(const FileRecord &record)
+{
+    QByteArray digest;
+    if (cache_.findSampleHash(record, digest)) {
+        if (!fileSignatureMatches(record))
+            return {};
+        cacheHits_.fetch_add(1, std::memory_order_relaxed);
+        return digest;
+    }
+    cacheMisses_.fetch_add(1, std::memory_order_relaxed);
+    digest = sampleSha256(record, &cancelled_);
+    if (!digest.isEmpty() && !cancelled_.load(std::memory_order_relaxed))
+        cache_.storeSampleHash(record, digest);
+    return digest;
 }
 
 QByteArray SearchEngine::cachedSha256(const FileRecord &record)
 {
     QByteArray digest;
     if (cache_.findHash(record, digest)) {
+        if (!fileSignatureMatches(record))
+            return {};
         cacheHits_.fetch_add(1, std::memory_order_relaxed);
         return digest;
     }
     cacheMisses_.fetch_add(1, std::memory_order_relaxed);
-    digest = sha256(record.path, &cancelled_);
-    if (!cancelled_.load(std::memory_order_relaxed))
+    digest = sha256(record, &cancelled_);
+    if (!digest.isEmpty() && !cancelled_.load(std::memory_order_relaxed))
         cache_.storeHash(record, digest);
     return digest;
 }
@@ -441,6 +583,8 @@ bool SearchEngine::cachedFileContains(const FileRecord &record, const SearchOpti
     stream << o.contains << o.binary << o.multipleValues << o.multipleAnd << o.caseSensitive;
     const QByteArray queryKey = QCryptographicHash::hash(queryData, QCryptographicHash::Sha256);
     if (const auto cached = cache_.findContent(record, queryKey)) {
+        if (!fileSignatureMatches(record))
+            return false;
         cacheHits_.fetch_add(1, std::memory_order_relaxed);
         return *cached;
     }

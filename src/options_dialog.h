@@ -66,6 +66,7 @@ private:
     QCheckBox *retrieveOwner_{};
     QCheckBox *accurateProgress_{};
     QCheckBox *useCache_{};
+    QCheckBox *strictDuplicateComparison_{};
     QSpinBox *maxDepth_{};
     QSpinBox *maxResults_{};
     QComboBox *hidden_{};

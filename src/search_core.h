@@ -11,6 +11,9 @@
 #include <optional>
 #include <sys/types.h>
 
+inline constexpr qint64 duplicateSampleBlockSize = 64LL * 1024;
+inline constexpr qint64 duplicateSampleThreshold = 4LL * 1024 * 1024;
+
 struct SearchOptions {
     QString roots = QDir::homePath();
     QString fileWildcards = QStringLiteral("*");
@@ -41,6 +44,7 @@ struct SearchOptions {
     QString mode = QStringLiteral("Standard search");
     QString duplicateNameMode = QStringLiteral("All files and folders");
     bool duplicateNameWithoutExtension = false;
+    bool strictDuplicateComparison = false;
     bool showDuplicateCopiesOnly = true;
     bool includeSubfoldersInSummary = false;
     QString hidden = QStringLiteral("Any");
@@ -60,11 +64,20 @@ struct FileRecord {
     qint64 created = 0;
     qint64 accessed = 0;
     qint64 changed = 0;
+    qint64 modifiedNs = 0;
+    quint64 device = 0;
+    quint64 inode = 0;
     QString type;
     QString owner;
     QString attributes;
     int group = 0;
     int duplicateCopy = 0;
+};
+
+struct EffectiveRoots {
+    QStringList paths;
+    QStringList priorityPaths;
+    int skipped = 0;
 };
 
 Q_DECLARE_METATYPE(SearchOptions)
@@ -74,6 +87,8 @@ Q_DECLARE_METATYPE(QVector<FileRecord>)
 QStringList patterns(const QString &text);
 QStringList exclusionPatterns(const QString &text);
 bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensitivity cs);
+EffectiveRoots effectiveSearchRoots(const SearchOptions &options);
+int preferredRootIndex(const QString &path, const QStringList &roots);
 QString humanSize(qint64 bytes);
 QString ownerName(uid_t uid);
 std::optional<QByteArray> hexNeedle(QString text);
@@ -82,5 +97,9 @@ bool fileContains(const QString &path, const SearchOptions &options,
 bool filesEqual(const QString &leftPath, const QString &rightPath,
                 const std::atomic_bool *cancelled = nullptr);
 QByteArray sha256(const QString &path, const std::atomic_bool *cancelled = nullptr);
+QByteArray sha256(const FileRecord &record, const std::atomic_bool *cancelled = nullptr);
+QByteArray sampleSha256(const FileRecord &record,
+                        const std::atomic_bool *cancelled = nullptr);
+bool fileSignatureMatches(const FileRecord &record);
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds);
 bool shouldShowDuplicateResult(bool copiesOnly, int keeperPriority);
