@@ -48,7 +48,7 @@ jobs:
 
       - name: Verify Linux binary
         shell: bash
-        run: test -x build/searchmyfiles
+        run: test -x build/folderscope
 
       - name: Lint YAML
         shell: bash
