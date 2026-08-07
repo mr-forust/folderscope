@@ -156,7 +156,6 @@ jobs:
     needs: verify
     runs-on: [self-hosted, linux, arch, homelab]
     env:
-      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       RELEASE_TAG: ${{ github.event.inputs.release_tag }}
     steps:
       - name: Checkout repository
