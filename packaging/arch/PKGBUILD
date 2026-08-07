@@ -12,7 +12,8 @@ sha256sums=('SKIP')
 
 build() {
   cmake -S "${srcdir}/${pkgname}-${pkgver}" -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    -DCMAKE_INSTALL_PREFIX=/usr
   cmake --build build
 }
 
