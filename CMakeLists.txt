@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent DBus)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent DBus LinguistTools)
 
 add_library(folderscope_core STATIC
     src/search_core.cpp
@@ -42,11 +42,37 @@ target_link_libraries(folderscope PRIVATE folderscope_core Qt6::Widgets Qt6::Con
 target_compile_options(folderscope PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(folderscope PRIVATE FOLDERSCOPE_VERSION="${PROJECT_VERSION}")
 
+qt_add_translations(folderscope
+    TS_FILES translations/folderscope_ru.ts
+)
+
 install(TARGETS folderscope RUNTIME DESTINATION bin)
-install(FILES packaging/folderscope.desktop
+install(FILES packaging/org.folderscope.FolderScope.desktop
         DESTINATION share/applications)
 install(FILES packaging/folderscope.svg
-        DESTINATION share/icons/hicolor/scalable/apps)
+        DESTINATION share/icons/hicolor/scalable/apps
+        RENAME org.folderscope.FolderScope.svg)
+install(FILES packaging/org.folderscope.FolderScope.metainfo.xml
+        DESTINATION share/metainfo)
+install(FILES packaging/man/folderscope.1
+        DESTINATION share/man/man1)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/folderscope_ru.qm"
+        DESTINATION share/folderscope/translations)
+
+set(CPACK_PACKAGE_NAME "folderscope")
+set(CPACK_PACKAGE_VENDOR "FolderScope contributors")
+set(CPACK_PACKAGE_CONTACT "FolderScope contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Fast advanced file search for Linux")
+set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_GENERATOR "DEB;RPM")
+set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6core6 (>= 6.2), libqt6widgets6 (>= 6.2), libqt6dbus6 (>= 6.2)")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_RPM_PACKAGE_GROUP "Applications/FileTools")
+set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+set(CPACK_RPM_PACKAGE_AUTOREQPROV ON)
+include(CPack)
 
 include(CTest)
 if (BUILD_TESTING)

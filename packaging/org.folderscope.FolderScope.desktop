@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=FolderScope
+Comment=Fast advanced file search
+Exec=folderscope
+Icon=org.folderscope.FolderScope
+Terminal=false
+Categories=Utility;FileTools;

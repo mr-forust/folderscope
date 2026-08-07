@@ -11,6 +11,7 @@ name: ci-release
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   verify:
@@ -144,3 +145,38 @@ jobs:
               -H "Authorization: token ${GITEA_TOKEN}" \
               -F "attachment=@${asset}"
           done
+
+  publish-arch-package:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: [self-hosted, linux, arch, homelab]
+    env:
+      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Arch package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF##*/}"
+          version="${tag#v}"
+          test "$version" = "$(tr -d '[:space:]' < VERSION)"
+          git archive --format=tar.gz --prefix="folderscope-${version}/" HEAD \
+            > "packaging/arch/folderscope-${version}.tar.gz"
+          (
+            cd packaging/arch
+            makepkg --syncdeps --noconfirm --force
+          )
+
+      - name: Publish to Gitea Arch registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_file="$(find packaging/arch -maxdepth 1 -type f \
+            -name 'folderscope-*.pkg.tar.zst' -print -quit)"
+          test -n "$package_file"
+          curl --fail --show-error --user "${GITEA_ACTOR}:${GITEA_TOKEN}" \
+            --upload-file "$package_file" \
+            "https://gitea.forust.xyz/api/packages/forust/arch/folderscope"

@@ -49,6 +49,47 @@ Install into the current system:
 cmake --install build
 ```
 
+## Packages
+
+CPack produces native packages after a release build (the output is ignored by
+Git):
+
+```bash
+cpack --config build/CPackConfig.cmake -B package
+```
+
+This creates `.deb` and `.rpm` packages. A Flatpak manifest is available at
+`packaging/org.folderscope.FolderScope.yml`:
+
+```bash
+flatpak-builder --user --install --force-clean build-flatpak \
+  packaging/org.folderscope.FolderScope.yml
+```
+
+For Arch, use `packaging/arch/PKGBUILD` with a release tarball named
+`folderscope-VERSION.tar.gz`.
+
+Published releases are also available through the Gitea Arch package registry.
+Import its signing key and add the following to `/etc/pacman.conf`:
+
+```bash
+curl -LO https://gitea.forust.xyz/api/packages/forust/arch/repository.key
+sudo pacman-key --add repository.key
+sudo pacman-key --lsign-key "$(gpg --show-keys --with-colons repository.key | awk -F: '/^fpr:/ {print $10; exit}')"
+```
+
+```ini
+[folderscope]
+SigLevel = Required
+Server = https://gitea.forust.xyz/api/packages/forust/arch/$repo/$arch
+```
+
+Then install with `sudo pacman -Syu folderscope` (or `yay -S folderscope`).
+
+Translations are Qt `.ts` files in `translations/`; CMake compiles and installs
+their `.qm` files automatically. The application selects the system locale at
+startup.
+
 ## Notes
 
 FolderScope targets Linux only.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.folderscope.FolderScope</id>
+  <name>FolderScope</name>
+  <summary>Fast advanced file search</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Search files in selected folders without an index or background service.</p>
+  </description>
+  <launchable type="desktop-id">org.folderscope.FolderScope.desktop</launchable>
+  <provides><binary>folderscope</binary></provides>
+  <releases><release version="0.3.0" date="2026-08-07"/></releases>
+</component>
