@@ -7,11 +7,15 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStringConverter>
 
 #include <algorithm>
 #include <array>
+#include <numeric>
+#include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 QStringList patterns(const QString &text)
 {
@@ -46,17 +50,30 @@ QStringList exclusionPatterns(const QString &text)
     return result;
 }
 
-bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensitivity cs)
+CompiledWildcardMatcher::CompiledWildcardMatcher(const QStringList &items,
+                                                 Qt::CaseSensitivity cs)
 {
+    expressions_.reserve(items.size());
     for (const QString &pattern : items) {
-        const auto regex = QRegularExpression(
+        expressions_.push_back(QRegularExpression(
             QRegularExpression::wildcardToRegularExpression(pattern),
             cs == Qt::CaseInsensitive ? QRegularExpression::CaseInsensitiveOption
-                                      : QRegularExpression::NoPatternOption);
+                                      : QRegularExpression::NoPatternOption));
+    }
+}
+
+bool CompiledWildcardMatcher::matches(const QString &value) const
+{
+    for (const QRegularExpression &regex : expressions_) {
         if (regex.match(value).hasMatch())
             return true;
     }
     return false;
+}
+
+bool wildcardMatch(const QString &value, const QStringList &items, Qt::CaseSensitivity cs)
+{
+    return CompiledWildcardMatcher(items, cs).matches(value);
 }
 
 namespace {
@@ -217,7 +234,8 @@ QString ownerName(uid_t uid)
 std::optional<QByteArray> hexNeedle(QString text)
 {
     text.remove(QRegularExpression(QStringLiteral("\\s+")));
-    if (text.size() % 2 != 0 || !QRegularExpression(QStringLiteral("^[0-9a-fA-F]*$")).match(text).hasMatch())
+    if (text.isEmpty() || text.size() % 2 != 0
+        || !QRegularExpression(QStringLiteral("^[0-9a-fA-F]+$")).match(text).hasMatch())
         return std::nullopt;
     return QByteArray::fromHex(text.toLatin1());
 }
@@ -233,10 +251,16 @@ qint64 modifiedNanoseconds(const struct stat &st)
     return qint64(st.st_mtim.tv_sec) * 1'000'000'000LL + st.st_mtim.tv_nsec;
 }
 
+qint64 changedNanoseconds(const struct stat &st)
+{
+    return qint64(st.st_ctim.tv_sec) * 1'000'000'000LL + st.st_ctim.tv_nsec;
+}
+
 bool signatureMatches(const FileRecord &record, const struct stat &st)
 {
     return record.size == st.st_size
         && record.modifiedNs == modifiedNanoseconds(st)
+        && record.changedNs == changedNanoseconds(st)
         && record.device == quint64(st.st_dev)
         && record.inode == quint64(st.st_ino);
 }
@@ -247,92 +271,275 @@ bool statMatches(const FileRecord &record)
     const QByteArray nativePath = QFile::encodeName(record.path);
     return ::stat(nativePath.constData(), &st) == 0 && signatureMatches(record, st);
 }
+
+bool sameFileState(const struct stat &left, const struct stat &right)
+{
+    return S_ISREG(left.st_mode) && S_ISREG(right.st_mode)
+        && left.st_dev == right.st_dev
+        && left.st_ino == right.st_ino
+        && left.st_size == right.st_size
+        && modifiedNanoseconds(left) == modifiedNanoseconds(right)
+        && changedNanoseconds(left) == changedNanoseconds(right);
+}
+
+bool openRegularFile(QFile &file, const QString &path, struct stat &openedState,
+                     const FileRecord *expected = nullptr)
+{
+    const QByteArray nativePath = QFile::encodeName(path);
+    struct stat pathStat {};
+    if (::stat(nativePath.constData(), &pathStat) != 0 || !S_ISREG(pathStat.st_mode))
+        return false;
+    if (expected && !signatureMatches(*expected, pathStat))
+        return false;
+
+    const int fd = ::open(nativePath.constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+    if (fd < 0)
+        return false;
+
+    struct stat openedStat {};
+    if (::fstat(fd, &openedStat) != 0 || !S_ISREG(openedStat.st_mode)) {
+        ::close(fd);
+        return false;
+    }
+    if (expected ? !signatureMatches(*expected, openedStat)
+                 : !sameFileState(pathStat, openedStat)) {
+        ::close(fd);
+        return false;
+    }
+    if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
+        ::close(fd);
+        return false;
+    }
+    openedState = openedStat;
+    return true;
+}
+
+bool regularFileUnchanged(QFile &file, const QString &path,
+                          const struct stat &openedState,
+                          const FileRecord *expected = nullptr)
+{
+    struct stat descriptorState {};
+    if (::fstat(file.handle(), &descriptorState) != 0
+        || !sameFileState(openedState, descriptorState))
+        return false;
+    if (expected)
+        return signatureMatches(*expected, descriptorState) && statMatches(*expected);
+
+    struct stat pathState {};
+    const QByteArray nativePath = QFile::encodeName(path);
+    return ::stat(nativePath.constData(), &pathState) == 0
+        && sameFileState(openedState, pathState);
+}
+
+FileContentResult fileContainsImpl(const QString &path, const SearchOptions &options,
+                                   const std::atomic_bool *cancelled,
+                                   const FileRecord *expected)
+{
+    if (isCancelled(cancelled))
+        return FileContentResult::Error;
+    if (options.contains.isEmpty())
+        return !expected || statMatches(*expected)
+            ? FileContentResult::Match : FileContentResult::Error;
+
+    const QStringList terms = options.multipleValues
+        ? patterns(options.contains) : QStringList{options.contains};
+    QList<QByteArray> byteNeedles;
+    QList<QString> textNeedles;
+    for (const QString &term : terms) {
+        if (options.binary) {
+            const auto bytes = hexNeedle(term);
+            if (!bytes)
+                return FileContentResult::Error;
+            byteNeedles.push_back(*bytes);
+        } else if (options.caseSensitive) {
+            byteNeedles.push_back(term.toUtf8());
+        } else {
+            textNeedles.push_back(term.toCaseFolded());
+        }
+    }
+    if (byteNeedles.isEmpty() && textNeedles.isEmpty())
+        return !expected || statMatches(*expected)
+            ? FileContentResult::Match : FileContentResult::Error;
+
+    QFile file;
+    struct stat openedState {};
+    if (!openRegularFile(file, path, openedState, expected))
+        return FileContentResult::Error;
+
+    const bool textMode = !options.binary && !options.caseSensitive;
+    const qsizetype needleCount = textMode ? textNeedles.size() : byteNeedles.size();
+    QVector<bool> found(needleCount, false);
+    const qsizetype overlap = !textMode
+        ? std::accumulate(byteNeedles.cbegin(), byteNeedles.cend(), qsizetype{1},
+                          [](qsizetype size, const QByteArray &needle) {
+                              return std::max(size, needle.size());
+                          })
+        : std::accumulate(textNeedles.cbegin(), textNeedles.cend(), qsizetype{1},
+                          [](qsizetype size, const QString &needle) {
+                              return std::max(size, needle.size());
+                          });
+    const auto allMatched = [&] {
+        return options.multipleAnd
+            ? std::all_of(found.cbegin(), found.cend(), [](bool value) { return value; })
+            : std::any_of(found.cbegin(), found.cend(), [](bool value) { return value; });
+    };
+
+    QByteArray byteTail;
+    QString textTail;
+    QStringDecoder decoder(QStringDecoder::Utf8);
+    while (!file.atEnd() && !isCancelled(cancelled)) {
+        QByteArray chunk = file.read(1024 * 1024);
+        if (file.error() != QFileDevice::NoError)
+            return FileContentResult::Error;
+        if (chunk.isEmpty()) {
+            if (!file.atEnd())
+                return FileContentResult::Error;
+            break;
+        }
+
+        if (!textMode) {
+            QByteArray data = byteTail + chunk;
+            for (qsizetype i = 0; i < byteNeedles.size(); ++i)
+                if (!found[i] && data.contains(byteNeedles[i]))
+                    found[i] = true;
+            if (allMatched())
+                return regularFileUnchanged(file, path, openedState, expected)
+                    ? FileContentResult::Match : FileContentResult::Error;
+            byteTail = data.right(overlap - 1);
+        } else {
+            const QString decodedText = decoder.decode(chunk);
+            const QString decoded = decodedText.toCaseFolded();
+            if (decoder.hasError())
+                return FileContentResult::Error;
+            const QString data = textTail + decoded;
+            for (qsizetype i = 0; i < textNeedles.size(); ++i)
+                if (!found[i] && data.contains(textNeedles[i]))
+                    found[i] = true;
+            if (allMatched())
+                return regularFileUnchanged(file, path, openedState, expected)
+                    ? FileContentResult::Match : FileContentResult::Error;
+
+            qsizetype keep = overlap - 1;
+            if (keep > 0 && keep < data.size() && data.at(data.size() - keep).isLowSurrogate())
+                ++keep;
+            textTail = data.right(keep);
+        }
+    }
+
+    if (isCancelled(cancelled))
+        return FileContentResult::Error;
+    if (textMode) {
+        // A sentinel forces any pending UTF-8 sequence to be decoded. This
+        // also works with Qt versions that do not provide finalize().
+        const QString sentinel = decoder.decode(QByteArray(1, '\0'));
+        Q_UNUSED(sentinel);
+        if (decoder.hasError())
+            return FileContentResult::Error;
+    }
+    if (!regularFileUnchanged(file, path, openedState, expected))
+        return FileContentResult::Error;
+    return allMatched() ? FileContentResult::Match : FileContentResult::NoMatch;
+}
+
+FileCompareResult filesEqualImpl(const QString &leftPath, const QString &rightPath,
+                                const std::atomic_bool *cancelled,
+                                const FileRecord *leftExpected,
+                                const FileRecord *rightExpected)
+{
+    if (isCancelled(cancelled))
+        return FileCompareResult::Error;
+    QFile left;
+    QFile right;
+    struct stat leftOpenedState {};
+    struct stat rightOpenedState {};
+    if (!openRegularFile(left, leftPath, leftOpenedState, leftExpected)
+        || !openRegularFile(right, rightPath, rightOpenedState, rightExpected))
+        return FileCompareResult::Error;
+    const auto unchanged = [&] {
+        return regularFileUnchanged(left, leftPath, leftOpenedState, leftExpected)
+            && regularFileUnchanged(right, rightPath, rightOpenedState, rightExpected);
+    };
+    if (left.size() != right.size())
+        return unchanged() ? FileCompareResult::Different : FileCompareResult::Error;
+    while (!left.atEnd() && !isCancelled(cancelled)) {
+        const QByteArray leftData = left.read(1024 * 1024);
+        const QByteArray rightData = right.read(leftData.size());
+        if (left.error() != QFileDevice::NoError || right.error() != QFileDevice::NoError
+            || (leftData.isEmpty() && !left.atEnd())
+            || (rightData.isEmpty() && !right.atEnd()))
+            return FileCompareResult::Error;
+        if (leftData != rightData)
+            return unchanged() ? FileCompareResult::Different : FileCompareResult::Error;
+    }
+    if (isCancelled(cancelled) || !unchanged())
+        return FileCompareResult::Error;
+    return right.atEnd() ? FileCompareResult::Equal : FileCompareResult::Different;
+}
+}
+
+FileContentResult fileContentResult(const QString &path, const SearchOptions &options,
+                                    const std::atomic_bool *cancelled)
+{
+    return fileContainsImpl(path, options, cancelled, nullptr);
+}
+
+FileContentResult fileContentResult(const FileRecord &record, const SearchOptions &options,
+                                    const std::atomic_bool *cancelled)
+{
+    return fileContainsImpl(record.path, options, cancelled, &record);
 }
 
 bool fileContains(const QString &path, const SearchOptions &options,
                   const std::atomic_bool *cancelled)
 {
-    if (isCancelled(cancelled))
-        return false;
-    if (options.contains.isEmpty())
-        return true;
+    return fileContentResult(path, options, cancelled) == FileContentResult::Match;
+}
 
-    const QStringList terms = options.multipleValues
-        ? patterns(options.contains) : QStringList{options.contains};
-    QList<QByteArray> needles;
-    for (const QString &term : terms) {
-        if (options.binary) {
-            const auto bytes = hexNeedle(term);
-            if (!bytes)
-                return false;
-            needles.push_back(*bytes);
-        } else {
-            needles.push_back(term.toUtf8());
-        }
-    }
-    if (needles.isEmpty())
-        return true;
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
-        return false;
-
-    QVector<bool> found(needles.size(), false);
-    qsizetype overlap = 1;
-    for (const QByteArray &needle : needles)
-        overlap = std::max(overlap, needle.size());
-    QByteArray tail;
-    while (!file.atEnd() && !isCancelled(cancelled)) {
-        QByteArray data = tail + file.read(1024 * 1024);
-        if (!options.caseSensitive && !options.binary)
-            data = data.toLower();
-        for (qsizetype i = 0; i < needles.size(); ++i) {
-            QByteArray needle = needles[i];
-            if (!options.caseSensitive && !options.binary)
-                needle = needle.toLower();
-            if (!found[i] && data.contains(needle))
-                found[i] = true;
-        }
-        const bool matched = options.multipleAnd
-            ? std::all_of(found.cbegin(), found.cend(), [](bool foundTerm) { return foundTerm; })
-            : std::any_of(found.cbegin(), found.cend(), [](bool foundTerm) { return foundTerm; });
-        if (matched)
-            return true;
-        tail = data.right(overlap - 1);
-    }
-    return false;
+bool fileContains(const FileRecord &record, const SearchOptions &options,
+                  const std::atomic_bool *cancelled)
+{
+    return fileContentResult(record, options, cancelled) == FileContentResult::Match;
 }
 
 bool filesEqual(const QString &leftPath, const QString &rightPath,
                 const std::atomic_bool *cancelled)
 {
-    if (isCancelled(cancelled))
-        return false;
-    QFile left(leftPath);
-    QFile right(rightPath);
-    if (!left.open(QIODevice::ReadOnly) || !right.open(QIODevice::ReadOnly)
-        || left.size() != right.size())
-        return false;
-    while (!left.atEnd() && !isCancelled(cancelled)) {
-        const QByteArray leftData = left.read(1024 * 1024);
-        const QByteArray rightData = right.read(leftData.size());
-        if (leftData != rightData)
-            return false;
-    }
-    return !isCancelled(cancelled) && right.atEnd();
+    return filesEqualImpl(leftPath, rightPath, cancelled, nullptr, nullptr)
+        == FileCompareResult::Equal;
+}
+
+bool filesEqual(const FileRecord &left, const FileRecord &right,
+                const std::atomic_bool *cancelled)
+{
+    return compareFiles(left, right, cancelled) == FileCompareResult::Equal;
+}
+
+FileCompareResult compareFiles(const FileRecord &left, const FileRecord &right,
+                               const std::atomic_bool *cancelled)
+{
+    return filesEqualImpl(left.path, right.path, cancelled, &left, &right);
 }
 
 QByteArray sha256(const QString &path, const std::atomic_bool *cancelled)
 {
     if (isCancelled(cancelled))
         return {};
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly))
+    QFile file;
+    struct stat openedState {};
+    if (!openRegularFile(file, path, openedState))
         return {};
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    while (!file.atEnd() && !isCancelled(cancelled))
-        hash.addData(file.read(1024 * 1024));
-    return isCancelled(cancelled) ? QByteArray{} : hash.result();
+    while (!file.atEnd() && !isCancelled(cancelled)) {
+        const QByteArray block = file.read(1024 * 1024);
+        if (file.error() != QFileDevice::NoError
+            || (block.isEmpty() && !file.atEnd()))
+            return {};
+        hash.addData(block);
+    }
+    return !isCancelled(cancelled) && file.atEnd()
+            && file.error() == QFileDevice::NoError
+            && regularFileUnchanged(file, path, openedState)
+        ? hash.result() : QByteArray{};
 }
 
 bool fileSignatureMatches(const FileRecord &record)
@@ -340,12 +547,36 @@ bool fileSignatureMatches(const FileRecord &record)
     return statMatches(record);
 }
 
+bool removePathWithoutFollowingSymlink(const QString &path)
+{
+    const QFileInfo info(path);
+    if (info.isSymLink())
+        return QFile::remove(path);
+    if (info.isDir())
+        return QDir(path).removeRecursively();
+    return QFile::remove(path);
+}
+
 QByteArray sha256(const FileRecord &record, const std::atomic_bool *cancelled)
 {
-    if (isCancelled(cancelled) || !statMatches(record))
+    if (isCancelled(cancelled))
         return {};
-    const QByteArray digest = sha256(record.path, cancelled);
-    return !digest.isEmpty() && statMatches(record) ? digest : QByteArray{};
+    QFile file;
+    struct stat openedState {};
+    if (!openRegularFile(file, record.path, openedState, &record))
+        return {};
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    while (!file.atEnd() && !isCancelled(cancelled)) {
+        const QByteArray block = file.read(1024 * 1024);
+        if (file.error() != QFileDevice::NoError
+            || (block.isEmpty() && !file.atEnd()))
+            return {};
+        hash.addData(block);
+    }
+    return !isCancelled(cancelled) && file.atEnd()
+            && file.error() == QFileDevice::NoError
+            && regularFileUnchanged(file, record.path, openedState, &record)
+        ? hash.result() : QByteArray{};
 }
 
 QByteArray sampleSha256(const FileRecord &record, const std::atomic_bool *cancelled)
@@ -354,8 +585,9 @@ QByteArray sampleSha256(const FileRecord &record, const std::atomic_bool *cancel
         || !statMatches(record))
         return {};
 
-    QFile file(record.path);
-    if (!file.open(QIODevice::ReadOnly))
+    QFile file;
+    struct stat openedState {};
+    if (!openRegularFile(file, record.path, openedState, &record))
         return {};
 
     const qint64 middleOffset = (record.size - duplicateSampleBlockSize) / 2;
@@ -367,12 +599,15 @@ QByteArray sampleSha256(const FileRecord &record, const std::atomic_bool *cancel
         if (isCancelled(cancelled) || !file.seek(offset))
             return {};
         const QByteArray block = file.read(duplicateSampleBlockSize);
-        if (block.size() != duplicateSampleBlockSize)
+        if (file.error() != QFileDevice::NoError
+            || block.size() != duplicateSampleBlockSize)
             return {};
         hash.addData(block);
     }
     const QByteArray digest = hash.result();
-    return !isCancelled(cancelled) && statMatches(record) ? digest : QByteArray{};
+    return !isCancelled(cancelled)
+            && regularFileUnchanged(file, record.path, openedState, &record)
+        ? digest : QByteArray{};
 }
 
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds)

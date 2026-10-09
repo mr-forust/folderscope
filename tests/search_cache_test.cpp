@@ -15,6 +15,7 @@ private:
         value.path = QStringLiteral("/tmp/cache-test.bin");
         value.size = 1234;
         value.modifiedNs = 5678;
+        value.changedNs = 6789;
         value.device = 9;
         value.inode = 10;
         return value;
@@ -56,11 +57,14 @@ private slots:
         const FileRecord value = record();
         cache.storeSampleHash(value, QByteArray("sample"));
         cache.storeHash(value, QByteArray("full"));
+        const QByteArray query("query");
+        cache.storeContent(value, query, true);
 
-        const auto misses = [&cache](FileRecord changed) {
+        const auto misses = [&cache, &query](FileRecord changed) {
             QByteArray digest;
             return !cache.findSampleHash(changed, digest)
-                && !cache.findHash(changed, digest);
+                && !cache.findHash(changed, digest)
+                && !cache.findContent(changed, query).has_value();
         };
 
         FileRecord changed = value;
@@ -70,6 +74,9 @@ private slots:
         ++changed.modifiedNs;
         QVERIFY(misses(changed));
         changed = value;
+        ++changed.changedNs;
+        QVERIFY(misses(changed));
+        changed = value;
         ++changed.device;
         QVERIFY(misses(changed));
         changed = value;
@@ -77,7 +84,7 @@ private slots:
         QVERIFY(misses(changed));
     }
 
-    void ignoresVersionOneData()
+    void ignoresPreviousVersionData()
     {
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -86,7 +93,7 @@ private slots:
         QVERIFY(file.open(QIODevice::WriteOnly));
         QDataStream stream(&file);
         stream.setVersion(QDataStream::Qt_6_0);
-        stream << quint32(0x46534348) << quint32(1) << quint32(0);
+        stream << quint32(0x46534348) << quint32(3) << quint32(0);
         file.close();
 
         SearchCache cache(path);
@@ -103,7 +110,7 @@ private slots:
         quint32 version = 0;
         savedStream >> magic >> version;
         QCOMPARE(magic, quint32(0x46534348));
-        QCOMPARE(version, quint32(2));
+        QCOMPARE(version, quint32(4));
     }
 };
 

@@ -9,6 +9,25 @@ class OptionsDialogTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void preservesOptionsControlledOutsideDialog_data()
+    {
+        QTest::addColumn<bool>("copiesOnly");
+        QTest::newRow("show-all") << false;
+        QTest::newRow("copies-only") << true;
+    }
+
+    void preservesOptionsControlledOutsideDialog()
+    {
+        QFETCH(bool, copiesOnly);
+        SearchOptions options;
+        options.mode = QStringLiteral("Duplicates search");
+        options.showDuplicateCopiesOnly = copiesOnly;
+        options.includeSubfoldersInSummary = true;
+        OptionsDialog dialog(options);
+        QCOMPARE(dialog.options().showDuplicateCopiesOnly, copiesOnly);
+        QVERIFY(dialog.options().includeSubfoldersInSummary);
+    }
+
     void exposesStrictDuplicateComparison()
     {
         SearchOptions options;

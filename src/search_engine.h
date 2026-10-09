@@ -36,7 +36,7 @@ signals:
 private:
     QByteArray cachedSampleSha256(const FileRecord &record);
     QByteArray cachedSha256(const FileRecord &record);
-    bool cachedFileContains(const FileRecord &record, const SearchOptions &o);
+    FileContentResult cachedFileContent(const FileRecord &record, const SearchOptions &o);
 
     SearchCache cache_;
     std::atomic<quint64> cacheHits_ = 0;

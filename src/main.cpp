@@ -14,11 +14,16 @@ namespace {
 void migrateLegacySettings()
 {
     QSettings settings;
-    const QString migrationKey =
+    const QString migrationKey = QStringLiteral("migration/legacySettingsImported");
+    const QString previousMigrationKey =
         QStringLiteral("migration/searchMyFilesSettingsImported");
-    if (settings.value(migrationKey, false).toBool())
+    if (settings.value(migrationKey,
+                       settings.value(previousMigrationKey, false)).toBool()) {
+        settings.setValue(migrationKey, true);
         return;
+    }
 
+    // Keep the old settings namespace so existing user settings are imported.
     QSettings legacy(QStringLiteral("SearchMyFilesLinux"),
                      QStringLiteral("SearchMyFiles"));
     for (const QString &key : legacy.allKeys()) {

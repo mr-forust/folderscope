@@ -3,6 +3,7 @@
 #include <QByteArray>
 #include <QDir>
 #include <QMetaType>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -65,6 +66,7 @@ struct FileRecord {
     qint64 accessed = 0;
     qint64 changed = 0;
     qint64 modifiedNs = 0;
+    qint64 changedNs = 0;
     quint64 device = 0;
     quint64 inode = 0;
     QString type;
@@ -80,6 +82,28 @@ struct EffectiveRoots {
     int skipped = 0;
 };
 
+enum class FileContentResult {
+    Match,
+    NoMatch,
+    Error,
+};
+
+enum class FileCompareResult {
+    Equal,
+    Different,
+    Error,
+};
+
+class CompiledWildcardMatcher {
+public:
+    explicit CompiledWildcardMatcher(const QStringList &items = {},
+                                     Qt::CaseSensitivity cs = Qt::CaseInsensitive);
+    bool matches(const QString &value) const;
+
+private:
+    QVector<QRegularExpression> expressions_;
+};
+
 Q_DECLARE_METATYPE(SearchOptions)
 Q_DECLARE_METATYPE(FileRecord)
 Q_DECLARE_METATYPE(QVector<FileRecord>)
@@ -92,14 +116,25 @@ int preferredRootIndex(const QString &path, const QStringList &roots);
 QString humanSize(qint64 bytes);
 QString ownerName(uid_t uid);
 std::optional<QByteArray> hexNeedle(QString text);
+FileContentResult fileContentResult(const QString &path, const SearchOptions &options,
+                                    const std::atomic_bool *cancelled = nullptr);
+FileContentResult fileContentResult(const FileRecord &record, const SearchOptions &options,
+                                    const std::atomic_bool *cancelled = nullptr);
 bool fileContains(const QString &path, const SearchOptions &options,
+                  const std::atomic_bool *cancelled = nullptr);
+bool fileContains(const FileRecord &record, const SearchOptions &options,
                   const std::atomic_bool *cancelled = nullptr);
 bool filesEqual(const QString &leftPath, const QString &rightPath,
                 const std::atomic_bool *cancelled = nullptr);
+bool filesEqual(const FileRecord &left, const FileRecord &right,
+                const std::atomic_bool *cancelled = nullptr);
+FileCompareResult compareFiles(const FileRecord &left, const FileRecord &right,
+                               const std::atomic_bool *cancelled = nullptr);
 QByteArray sha256(const QString &path, const std::atomic_bool *cancelled = nullptr);
 QByteArray sha256(const FileRecord &record, const std::atomic_bool *cancelled = nullptr);
 QByteArray sampleSha256(const FileRecord &record,
                         const std::atomic_bool *cancelled = nullptr);
 bool fileSignatureMatches(const FileRecord &record);
+bool removePathWithoutFollowingSymlink(const QString &path);
 bool parseOptionalIsoDate(const QString &text, qint64 &seconds);
 bool shouldShowDuplicateResult(bool copiesOnly, int keeperPriority);

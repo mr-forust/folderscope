@@ -1,11 +1,14 @@
 #include "search_core.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QtTest>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 FileRecord recordFor(const QString &path)
@@ -20,6 +23,8 @@ FileRecord recordFor(const QString &path)
     record.modified = st.st_mtime;
     record.modifiedNs =
         qint64(st.st_mtim.tv_sec) * 1'000'000'000LL + st.st_mtim.tv_nsec;
+    record.changedNs =
+        qint64(st.st_ctim.tv_sec) * 1'000'000'000LL + st.st_ctim.tv_nsec;
     record.device = st.st_dev;
     record.inode = st.st_ino;
     record.type = QStringLiteral("File");
@@ -38,6 +43,20 @@ class SearchCoreTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void rejectsIncompleteUtf8AtEndOfFile()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath(QStringLiteral("truncated.txt"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(QByteArray("text\xe2\x82", 6)), 6);
+        file.close();
+        SearchOptions options;
+        options.contains = QStringLiteral("absent");
+        options.caseSensitive = false;
+        QCOMPARE(fileContentResult(path, options), FileContentResult::Error);
+    }
+
     void parsesPatternsAndExclusions()
     {
         QCOMPARE(patterns(QStringLiteral("/a; \"/b,with-comma\" , /c")),
@@ -225,6 +244,119 @@ private slots:
         QVERIFY(filesEqual(firstPath, secondPath));
         QVERIFY(!filesEqual(firstPath, differentPath));
         QCOMPARE(sha256(firstPath), QCryptographicHash::hash(content, QCryptographicHash::Sha256));
+    }
+
+    void caseInsensitiveTextSearchUsesUnicodeCaseFoldingAcrossChunks()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("unicode.txt"));
+        const QByteArray content = QByteArray(1024 * 1024 - 1, 'x')
+            + QByteArray("\xc3\x84") + QByteArray(" stra\xc3\x9f" "e");
+        QVERIFY(writeFile(path, content));
+
+        SearchOptions options;
+        options.contains = QStringLiteral("ä");
+        QVERIFY(fileContains(path, options));
+        options.contains = QStringLiteral("STRAßE");
+        QVERIFY(fileContains(path, options));
+        options.caseSensitive = true;
+        QVERIFY(!fileContains(path, options));
+    }
+
+    void rejectsEmptyHexNeedles()
+    {
+        QVERIFY(!hexNeedle(QString{}));
+        QVERIFY(!hexNeedle(QStringLiteral(" \t\n ")));
+        QVERIFY(!hexNeedle(QStringLiteral("abc")));
+        QVERIFY(!hexNeedle(QStringLiteral("0g")));
+        const auto valid = hexNeedle(QStringLiteral("41 42"));
+        QVERIFY(valid.has_value());
+        QCOMPARE(*valid, QByteArray("AB"));
+    }
+
+    void deletesDirectorySymlinkWithoutTouchingTarget()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString target = directory.filePath(QStringLiteral("target"));
+        QVERIFY(QDir().mkpath(QDir(target).filePath(QStringLiteral("child"))));
+        const QString targetFile = QDir(target).filePath(QStringLiteral("keep.txt"));
+        QVERIFY(writeFile(targetFile, QByteArray("keep")));
+
+        const QString link = directory.filePath(QStringLiteral("target-link"));
+        const QByteArray nativeTarget = QFile::encodeName(target);
+        const QByteArray nativeLink = QFile::encodeName(link);
+        QVERIFY(::symlink(nativeTarget.constData(), nativeLink.constData()) == 0);
+        QVERIFY(QFileInfo(link).isSymLink());
+
+        QVERIFY(removePathWithoutFollowingSymlink(link));
+        QVERIFY(!QFileInfo(link).isSymLink());
+        QVERIFY(QFileInfo(targetFile).isFile());
+
+        const QString normalDirectory = directory.filePath(QStringLiteral("normal"));
+        QVERIFY(QDir().mkpath(QDir(normalDirectory).filePath(QStringLiteral("child"))));
+        const QString normalFile = QDir(normalDirectory).filePath(QStringLiteral("child/file.txt"));
+        QVERIFY(writeFile(normalFile, QByteArray("remove")));
+        QVERIFY(removePathWithoutFollowingSymlink(normalDirectory));
+        QVERIFY(!QFileInfo::exists(normalDirectory));
+    }
+
+    void rejectsFifoReadsWithoutBlocking()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString path = directory.filePath(QStringLiteral("waiting.fifo"));
+        const QByteArray nativePath = QFile::encodeName(path);
+        QVERIFY(::mkfifo(nativePath.constData(), 0600) == 0);
+
+        SearchOptions options;
+        options.contains = QStringLiteral("needle");
+        QElapsedTimer timer;
+        timer.start();
+        QVERIFY(!fileContains(path, options));
+        QVERIFY(!filesEqual(path, path));
+        QVERIFY(sha256(path).isEmpty());
+        QVERIFY(sha256(recordFor(path)).isEmpty());
+        QVERIFY(timer.elapsed() < 1000);
+    }
+
+    void recordBoundReadsRejectRetargetedSymlinks()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString original = directory.filePath(QStringLiteral("original.txt"));
+        const QString alternate = directory.filePath(QStringLiteral("alternate.txt"));
+        const QString link = directory.filePath(QStringLiteral("selected.txt"));
+        QVERIFY(writeFile(original, QByteArray("match")));
+        QVERIFY(writeFile(alternate, QByteArray("other")));
+
+        const QByteArray nativeOriginal = QFile::encodeName(original);
+        const QByteArray nativeAlternate = QFile::encodeName(alternate);
+        const QByteArray nativeLink = QFile::encodeName(link);
+        QVERIFY(::symlink(nativeOriginal.constData(), nativeLink.constData()) == 0);
+        const FileRecord record = recordFor(link);
+        const QByteArray originalDigest = sha256(record);
+        QVERIFY(!originalDigest.isEmpty());
+
+        SearchOptions options;
+        options.contains = QStringLiteral("match");
+        QVERIFY(fileContains(record, options));
+
+        QVERIFY(QFile::remove(link));
+        QVERIFY(::symlink(nativeAlternate.constData(), nativeLink.constData()) == 0);
+        QVERIFY(!fileContains(record, options));
+        QVERIFY(sha256(record).isEmpty());
+        QVERIFY(!filesEqual(record, recordFor(alternate)));
+
+        options.contains = QStringLiteral("other");
+        QVERIFY(fileContains(link, options));
+
+        QVERIFY(QFile::remove(link));
+        QVERIFY(::symlink(nativeOriginal.constData(), nativeLink.constData()) == 0);
+        options.contains = QStringLiteral("match");
+        QVERIFY(fileContains(record, options));
+        QCOMPARE(sha256(record), originalDigest);
     }
 
     void cancelsFileOperations()

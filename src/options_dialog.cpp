@@ -12,7 +12,7 @@
 
 #include "long_long_spin_box.h"
 
-OptionsDialog::OptionsDialog(const SearchOptions &o, QWidget *parent) : QDialog(parent)
+OptionsDialog::OptionsDialog(const SearchOptions &o, QWidget *parent) : QDialog(parent), initialOptions_(o)
 {
     setWindowTitle(tr("Search Options"));
     resize(760, 560);
@@ -210,7 +210,7 @@ void OptionsDialog::setupUi(const SearchOptions &o)
 
 SearchOptions OptionsDialog::options() const
 {
-    SearchOptions o;
+    SearchOptions o = initialOptions_;
     o.roots = roots_->currentText();
     o.fileWildcards = fileMasks_->currentText();
     o.subfolderWildcards = subfolderMasks_->currentText();

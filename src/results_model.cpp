@@ -21,9 +21,9 @@ QVariant ResultsModel::headerData(int section, Qt::Orientation orientation, int 
         return {};
     if (role == Qt::ToolTipRole) {
         if (section == DuplicateNumber)
-            return tr("Identifies one set of identical files");
+            return tr("Files with the same group number belong together. Different groups are unrelated.");
         if (section == DuplicateGroup)
-            return tr("Most-specific base folder wins; ties use newer files, then path. 1 = preferred copy to keep");
+            return tr("Recommended copy to keep: most-specific base folder, then newer file, then path. Other copies are numbered within their group.");
         return {};
     }
     if (role != Qt::DisplayRole)
@@ -31,7 +31,7 @@ QVariant ResultsModel::headerData(int section, Qt::Orientation orientation, int 
     static const QStringList names{
         tr("Filename"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
         tr("Created Time"), tr("Last Accessed Time"), tr("Entry Modified Time"),
-        tr("Attributes"), tr("Extension"), tr("Duplicate Set"), tr("Keeper Priority"),
+        tr("Attributes"), tr("Extension"), tr("Duplicate group"), tr("Copy status"),
         tr("Type"), tr("File Owner"), tr("Full Path")
     };
     return names.value(section);
@@ -86,7 +86,7 @@ QVariant ResultsModel::data(const QModelIndex &index, int role) const
     case Attributes: return r.attributes;
     case Extension: return QFileInfo(r.name).suffix();
     case DuplicateNumber: return r.group ? QVariant(r.group) : QVariant{};
-    case DuplicateGroup: return r.duplicateCopy ? QVariant(r.duplicateCopy) : QVariant{};
+    case DuplicateGroup: return copyStatus(r.duplicateCopy);
     case Type: return r.type;
     case Owner: return r.owner;
     case FullPath: return r.path;
@@ -122,4 +122,10 @@ QString ResultsModel::formattedSize(qint64 bytes) const
         ? QStringLiteral("%1 Bytes").arg(bytes)
         : QStringLiteral("%1 %2").arg(double(bytes) / divisors[index], 0, 'f', 2)
               .arg(QString::fromLatin1(units[index]));
+}
+
+QString ResultsModel::copyStatus(int copyNumber)
+{
+    if (copyNumber <= 0) return {};
+    return copyNumber == 1 ? tr("Keep this copy") : tr("Duplicate №%1").arg(copyNumber - 1);
 }

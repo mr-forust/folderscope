@@ -21,6 +21,8 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
     QVariant data(const QModelIndex &index, int role) const override;
 
+    static QString copyStatus(int copyNumber);
+
     void setRows(QVector<FileRecord> rows);
     const QVector<FileRecord> &rows() const { return rows_; }
 

@@ -102,9 +102,10 @@ void SearchCache::save()
         return;
     QDataStream stream(&file);
     stream.setVersion(QDataStream::Qt_6_0);
-    stream << quint32(0x46534348) << quint32(2) << quint32(entries_.size());
+    stream << quint32(0x46534348) << quint32(4) << quint32(entries_.size());
     for (auto it = entries_.cbegin(); it != entries_.cend(); ++it) {
-        stream << it.key() << it->size << it->modifiedNs << it->device << it->inode
+        stream << it.key() << it->size << it->modifiedNs << it->changedNs
+               << it->device << it->inode
                << it->lastUsed << it->sampleSha256 << it->sha256;
         stream << quint32(it->contentMatches.size());
         for (auto match = it->contentMatches.cbegin(); match != it->contentMatches.cend(); ++match)
@@ -125,6 +126,7 @@ bool SearchCache::signatureMatches(const SearchCacheEntry &entry, const FileReco
 {
     return entry.size == record.size
         && entry.modifiedNs == record.modifiedNs
+        && entry.changedNs == record.changedNs
         && entry.device == record.device
         && entry.inode == record.inode;
 }
@@ -136,6 +138,7 @@ SearchCacheEntry &SearchCache::currentEntry(const FileRecord &record)
         entry = {};
         entry.size = record.size;
         entry.modifiedNs = record.modifiedNs;
+        entry.changedNs = record.changedNs;
         entry.device = record.device;
         entry.inode = record.inode;
     }
@@ -154,13 +157,14 @@ void SearchCache::load()
     quint32 version = 0;
     quint32 count = 0;
     stream >> magic >> version >> count;
-    if (magic != 0x46534348 || version != 2 || count > 200'000)
+    if (magic != 0x46534348 || version != 4 || count > 200'000)
         return;
     for (quint32 index = 0; index < count && stream.status() == QDataStream::Ok; ++index) {
         QString path;
         SearchCacheEntry entry;
         quint32 contentCount = 0;
-        stream >> path >> entry.size >> entry.modifiedNs >> entry.device >> entry.inode
+        stream >> path >> entry.size >> entry.modifiedNs >> entry.changedNs
+               >> entry.device >> entry.inode
                >> entry.lastUsed >> entry.sampleSha256 >> entry.sha256;
         stream >> contentCount;
         if (contentCount > 256)

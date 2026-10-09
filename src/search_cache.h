@@ -10,6 +10,7 @@
 struct SearchCacheEntry {
     qint64 size = -1;
     qint64 modifiedNs = -1;
+    qint64 changedNs = -1;
     quint64 device = 0;
     quint64 inode = 0;
     qint64 lastUsed = 0;

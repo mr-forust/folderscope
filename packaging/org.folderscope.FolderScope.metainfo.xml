@@ -3,6 +3,7 @@
   <id>org.folderscope.FolderScope</id>
   <name>FolderScope</name>
   <summary>Fast advanced file search</summary>
+  <url type="homepage">https://git.forust.xyz/forust/folderscope</url>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <description>
@@ -10,5 +11,5 @@
   </description>
   <launchable type="desktop-id">org.folderscope.FolderScope.desktop</launchable>
   <provides><binary>folderscope</binary></provides>
-  <releases><release version="0.3.0" date="2026-08-07"/></releases>
+  <releases><release version="0.3.1" date="2026-10-09"/><release version="0.3.0" date="2026-08-07"/></releases>
 </component>

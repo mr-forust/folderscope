@@ -1,12 +1,12 @@
 pkgname=folderscope
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Fast advanced file search for Linux'
 arch=('x86_64')
-url='https://gitea.forust.xyz/forust/folderscope'
+url='https://git.forust.xyz/forust/folderscope'
 license=('MIT')
 depends=('qt6-base')
-makedepends=('cmake' 'ninja')
+makedepends=('cmake' 'ninja' 'qt6-tools')
 source=("${pkgname}-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

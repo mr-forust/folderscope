@@ -1,4 +1,5 @@
 #include "main_window.h"
+#include "tabular_text.h"
 
 #include <QActionGroup>
 #include <QApplication>
@@ -8,17 +9,23 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QTextStream>
+#include <QSaveFile>
 #include <QVBoxLayout>
+#include <QDBusObjectPath>
+#include <QDBusReply>
+#include <QDBusUnixFileDescriptor>
+#include <QDBusVariant>
 
 #include "options_dialog.h"
+#include "results_export.h"
 #include "search_engine.h"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 MainWindow::MainWindow()
 {
@@ -182,8 +189,8 @@ MainWindow::MainWindow()
 
     auto *duplicateOptions = optionsMenu->addMenu(tr("Duplicate Search Options"));
     auto *duplicateOptionsGroup = new QActionGroup(duplicateOptions);
-    auto *showAllDuplicates = duplicateOptions->addAction(tr("Show All Files"));
-    auto *showOnlyDuplicates = duplicateOptions->addAction(tr("Show Only Duplicate Files"));
+    auto *showAllDuplicates = duplicateOptions->addAction(tr("Show all copies (including recommended)"));
+    auto *showOnlyDuplicates = duplicateOptions->addAction(tr("Show duplicate copies only"));
     for (QAction *action : {showAllDuplicates, showOnlyDuplicates}) {
         action->setCheckable(true);
         duplicateOptionsGroup->addAction(action);
@@ -451,7 +458,8 @@ void MainWindow::copyInformation()
         QStringList values;
         for (int column = 0; column < proxy_->columnCount(); ++column) {
             if (!table_->isColumnHidden(column))
-                values.push_back(proxy_->index(rowIndex.row(), column).data().toString());
+                values.push_back(spreadsheetSafeCell(
+                    proxy_->index(rowIndex.row(), column).data().toString()));
         }
         lines.push_back(values.join(u'\t'));
     }
@@ -546,12 +554,71 @@ void MainWindow::openFolder()
         QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(paths.front()).absolutePath()));
 }
 
-// bug 5 fix: QProcess → QDesktopServices
+// Ask the desktop portal to choose a handler instead of opening the default app.
 void MainWindow::openWith()
 {
-    const QStringList paths = selectedPaths();
-    if (!paths.isEmpty())
-        QDesktopServices::openUrl(QUrl::fromLocalFile(paths.front()));
+    for (const QString &path : selectedPaths()) {
+        const QByteArray nativePath = QFile::encodeName(path);
+        const int fd = ::open(nativePath.constData(),
+                              O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+        if (fd < 0) {
+            QMessageBox::warning(this, tr("Open With…"), tr("Could not open %1").arg(path));
+            continue;
+        }
+        struct stat openedState {};
+        if (::fstat(fd, &openedState) != 0
+            || (!S_ISREG(openedState.st_mode) && !S_ISDIR(openedState.st_mode))) {
+            ::close(fd);
+            QMessageBox::warning(this, tr("Open With…"),
+                                 tr("The selected item is not a regular file or folder."));
+            continue;
+        }
+
+        const QDBusConnection bus = QDBusConnection::sessionBus();
+        const QString portalService = QStringLiteral("org.freedesktop.portal.Desktop");
+        const QString portalPath = QStringLiteral("/org/freedesktop/portal/desktop");
+        constexpr int portalTimeoutMs = 5000;
+
+        QDBusMessage versionRequest = QDBusMessage::createMethodCall(
+            portalService, portalPath, QStringLiteral("org.freedesktop.DBus.Properties"),
+            QStringLiteral("Get"));
+        versionRequest << QStringLiteral("org.freedesktop.portal.OpenURI")
+                       << QStringLiteral("version");
+        const QDBusMessage versionReply = bus.call(versionRequest, QDBus::Block,
+                                                   portalTimeoutMs);
+        if (versionReply.type() != QDBusMessage::ReplyMessage
+            || versionReply.arguments().size() != 1) {
+            ::close(fd);
+            QMessageBox::warning(this, tr("Open With…"),
+                                 tr("The desktop application chooser is not available."));
+            continue;
+        }
+        const QVariant versionValue =
+            qvariant_cast<QDBusVariant>(versionReply.arguments().constFirst()).variant();
+        bool versionOk = false;
+        const uint version = versionValue.toUInt(&versionOk);
+        if (!versionOk || version < 3) {
+            ::close(fd);
+            QMessageBox::warning(this, tr("Open With…"),
+                                 tr("The desktop application chooser is not available."));
+            continue;
+        }
+
+        QDBusUnixFileDescriptor descriptor(fd);
+        ::close(fd);
+        const QVariantMap options{{QStringLiteral("ask"), true}};
+        QDBusMessage openRequest = QDBusMessage::createMethodCall(
+            portalService, portalPath, QStringLiteral("org.freedesktop.portal.OpenURI"),
+            QStringLiteral("OpenFile"));
+        openRequest << QString{} << QVariant::fromValue(descriptor) << options;
+        const QDBusMessage openReply = bus.call(openRequest, QDBus::Block, portalTimeoutMs);
+        if (openReply.type() != QDBusMessage::ReplyMessage) {
+            const QString error = openReply.errorMessage();
+            QMessageBox::warning(this, tr("Open With…"),
+                                 error.isEmpty() ? tr("Could not open the application chooser.")
+                                                 : error);
+        }
+    }
 }
 
 void MainWindow::selectInFileManager()
@@ -604,8 +671,7 @@ void MainWindow::deleteSelected()
         return;
     int failed = 0;
     for (const QString &path : paths) {
-        const QFileInfo info(path);
-        const bool removed = info.isDir() ? QDir(path).removeRecursively() : QFile::remove(path);
+        const bool removed = removePathWithoutFollowingSymlink(path);
         if (!removed)
             ++failed;
     }
@@ -668,9 +734,8 @@ void MainWindow::showProperties()
     addValue(tr("Entry Modified Time:"), date(record->changed));
     addValue(tr("Attributes:"), record->attributes);
     addValue(tr("Extension:"), QFileInfo(record->name).suffix());
-    addValue(tr("Duplicate Set:"), record->group ? QString::number(record->group) : QString{});
-    addValue(tr("Keeper Priority:"),
-             record->duplicateCopy ? QString::number(record->duplicateCopy) : QString{});
+    addValue(tr("Duplicate group:"), record->group ? QString::number(record->group) : QString{});
+    addValue(tr("Copy status:"), ResultsModel::copyStatus(record->duplicateCopy));
     addValue(tr("File Owner:"), record->owner);
     layout->addLayout(form);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok);
@@ -784,78 +849,26 @@ void MainWindow::exportResults()
         tr("CSV (*.csv);;Text (*.txt *.tsv);;HTML (*.html);;XML (*.xml);;JSON (*.json)"));
     if (path.isEmpty())
         return;
-    QFile file(path);
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::critical(this, tr("Export failed"), file.errorString());
         return;
     }
-    const auto quoted = [](QString value) {
-        value.replace(u'"', QStringLiteral("\"\""));
-        return u'"' + value + u'"';
-    };
-    const auto values = [](const FileRecord &r) {
-        const auto date = [](qint64 t) { return t ? QDateTime::fromSecsSinceEpoch(t).toString(Qt::ISODate) : QString{}; };
-        return QStringList{
-            r.name, r.folder, QString::number(r.size), QString::number(r.sizeOnDisk),
-            date(r.modified), date(r.created), date(r.accessed), date(r.changed),
-            r.attributes, QFileInfo(r.name).suffix(),
-            r.group ? QString::number(r.group) : QString{},
-            r.duplicateCopy ? QString::number(r.duplicateCopy) : QString{},
-            r.type, r.owner, r.path
-        };
-    };
     const QStringList headers{
         tr("Filename"), tr("Folder"), tr("Size"), tr("Size On Disk"), tr("Modified Time"),
         tr("Created Time"), tr("Last Accessed Time"), tr("Entry Modified Time"),
-        tr("Attributes"), tr("Extension"), tr("Duplicate Set"), tr("Keeper Priority"),
+        tr("Attributes"), tr("Extension"), tr("Duplicate group"), tr("Copy number (1 = keep)"),
         tr("Type"), tr("File Owner"), tr("Full Path")
     };
-    QTextStream out(&file);
     const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix == QStringLiteral("json")) {
-        QJsonArray array;
-        for (const auto &record : rows) {
-            QJsonObject object;
-            const QStringList row = values(record);
-            for (int i = 0; i < headers.size(); ++i)
-                object.insert(headers[i], row[i]);
-            array.append(object);
-        }
-        file.write(QJsonDocument(array).toJson());
-    } else if (suffix == QStringLiteral("html")) {
-        out << "<!doctype html><meta charset=\"utf-8\"><table><thead><tr>";
-        for (const auto &header : headers) out << "<th>" << header.toHtmlEscaped() << "</th>";
-        out << "</tr></thead><tbody>";
-        for (const auto &record : rows) {
-            out << "<tr>";
-            for (const auto &value : values(record)) out << "<td>" << value.toHtmlEscaped() << "</td>";
-            out << "</tr>";
-        }
-        out << "</tbody></table>";
-    } else if (suffix == QStringLiteral("xml")) {
-        out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?><SearchResults>";
-        for (const auto &record : rows) {
-            out << "<File>";
-            const auto row = values(record);
-            for (int i = 0; i < headers.size(); ++i) {
-                QString tag = headers[i];
-                tag.remove(u' ');
-                out << "<" << tag << ">" << row[i].toHtmlEscaped()
-                    << "</" << tag << ">";
-            }
-            out << "</File>";
-        }
-        out << "</SearchResults>";
-    } else {
-        const QChar separator = suffix == QStringLiteral("csv") ? u',' : u'\t';
-        if (addExportHeader_)
-            out << headers.join(separator) << u'\n';
-        for (const auto &record : rows) {
-            QStringList row = values(record);
-            if (separator == u',')
-                for (QString &value : row) value = quoted(value);
-            out << row.join(separator) << u'\n';
-        }
+    QString error;
+    if (!writeResults(file, rows, headers, suffix, addExportHeader_, &error)
+        || !file.commit()) {
+        if (error.isEmpty())
+            error = file.errorString();
+        file.cancelWriting();
+        QMessageBox::critical(this, tr("Export failed"), error);
+        return;
     }
     statusBar()->showMessage(tr("Exported %1 results to %2").arg(rows.size()).arg(path), 5000);
 }

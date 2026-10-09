@@ -29,7 +29,7 @@ Requirements:
 
 - CMake
 - a C++20 compiler
-- Qt 6 with `Widgets`, `Concurrent`, and `DBus`
+- Qt 6 with `Widgets`, `Concurrent`, `DBus`, and `LinguistTools`
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -73,7 +73,7 @@ Published releases are also available through the Gitea Arch package registry.
 Import its signing key and add the following to `/etc/pacman.conf`:
 
 ```bash
-curl -LO https://gitea.forust.xyz/api/packages/forust/arch/repository.key
+curl -LO https://git.forust.xyz/api/packages/forust/arch/repository.key
 sudo pacman-key --add repository.key
 sudo pacman-key --lsign-key "$(gpg --show-keys --with-colons repository.key | awk -F: '/^fpr:/ {print $10; exit}')"
 ```
@@ -81,7 +81,7 @@ sudo pacman-key --lsign-key "$(gpg --show-keys --with-colons repository.key | aw
 ```ini
 [folderscope]
 SigLevel = Required
-Server = https://gitea.forust.xyz/api/packages/forust/arch/$repo/$arch
+Server = https://git.forust.xyz/api/packages/forust/arch/$repo/$arch
 ```
 
 Then install with `sudo pacman -Syu folderscope` (or `yay -S folderscope`).
@@ -94,6 +94,6 @@ startup.
 
 FolderScope targets Linux only.
 
-Some Windows-specific SearchMyFiles features do not map directly to Linux,
-including NTFS-only metadata and Windows shell integrations. The app uses the
-native Linux equivalents where available.
+Some features from the Windows edition do not map directly to Linux, including
+NTFS-only metadata and Windows shell integrations. The app uses native Linux
+equivalents where available.

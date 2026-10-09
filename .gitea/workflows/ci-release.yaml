@@ -6,31 +6,57 @@ name: ci-release
       - main
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
-  pull_request:
+  # Do not add pull_request here until these labels use a verified isolated runner.
+  # Manual verification must start from main; release_tag selects a validated tag.
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing vX.Y.Z tag to publish to the Arch registry
-        required: true
+        description: Existing vX.Y.Z tag to validate or publish
+        required: false
         type: string
+      publish_arch:
+        description: Publish the selected release tag to the Arch registry
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
   verify:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: [self-hosted, linux, arch, homelab]
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.release_tag }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout selected ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref }}
+          fetch-depth: 0
 
-      - name: Verify release tag matches VERSION
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Validate selected release ref
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
         shell: bash
         run: |
-          tag="${GITHUB_REF##*/}"
+          set -euo pipefail
+          tag="${RELEASE_TAG:-${GITHUB_REF##*/}}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test "${tag#v}" = "$(tr -d '[:space:]' < VERSION)"
+          git show-ref --verify --quiet "refs/tags/${tag}"
+          tag_commit="$(git rev-parse "${tag}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$tag_commit"
+          git fetch --no-tags origin main
+          main_commit="$(git rev-parse FETCH_HEAD^{commit})"
+          git merge-base --is-ancestor "$tag_commit" "$main_commit"
+
+      - name: Require a release tag for manual Arch publication
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_arch
+        shell: bash
+        run: test -n "$RELEASE_TAG"
 
       - name: Configure release build
         shell: bash
@@ -62,18 +88,22 @@ jobs:
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
-            cytopia/yamllint:latest \
+            cytopia/yamllint@sha256:3e9eb827ab2b12a5ea5f49d4257bb3aca94bba9f1ba427c8bc7f2456385a5204 \
             -c .yamllint .gitea
 
   publish-linux-amd64:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: [self-hosted, linux, arch, homelab]
-    env:
-      GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+    permissions:
+      code: read
+      releases: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
 
       - name: Configure release build
         shell: bash
@@ -86,80 +116,58 @@ jobs:
       - name: Package release
         shell: bash
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF##*/}"
           version="${tag#v}"
-          package="folderscope-${version}-linux-amd64"
+          generation="${GITHUB_SHA:0:12}-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
+          package="folderscope-${version}-linux-amd64-${generation}"
           rm -rf dist package
           cmake --install build --prefix "$PWD/package/usr"
           mkdir -p "package/${package}"
           mv package/usr "package/${package}/"
           cp README.md CHANGELOG.md VERSION "package/${package}/"
           mkdir -p dist
-          tar -C package -czf "dist/${package}.tar.gz" "${package}"
-          sha256sum "dist/${package}.tar.gz" > "dist/${package}.tar.gz.sha256"
+          archive="${package}.tar.gz"
+          tar -C package -czf "dist/${archive}" "${package}"
+          (cd dist && sha256sum "$archive" > "${archive}.sha256")
 
       - name: Create Gitea release
         id: release
         shell: bash
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${GITHUB_REF##*/}"
-          release_url="https://gitea.forust.xyz/api/v1/repos/forust/folderscope/releases"
-          existing="$(curl -fsS \
-            "${release_url}/tags/${tag}" \
-            -H "Authorization: token ${GITEA_TOKEN}")" || existing='{}'
-          release_id="$(printf '%s' "$existing" | jq -r '.id // empty')"
-
-          if [ -z "$release_id" ]; then
-            payload="$(jq -n \
-              --arg tag "${tag}" \
-              --arg commit "${GITHUB_SHA}" \
-              --arg name "FolderScope ${tag}" \
-              --arg body "Release ${tag}. See CHANGELOG.md for notable changes." \
-              '{tag_name: $tag, target_commitish: $commit, name: $name, body: $body, draft: false, prerelease: false}')"
-            response="$(curl -fsS \
-              -X POST "${release_url}" \
-              -H "Authorization: token ${GITEA_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "$payload")"
-            release_id="$(printf '%s' "$response" | jq -r '.id')"
-          fi
-
+          release_url="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases"
+          release_id="$(scripts/create-gitea-release.sh "$release_url" "$tag" "$GITHUB_SHA")"
           test -n "$release_id" && test "$release_id" != "null"
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
 
       - name: Upload Gitea release assets
         shell: bash
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_ID: ${{ steps.release.outputs.release_id }}
         run: |
-          release_url="https://gitea.forust.xyz/api/v1/repos/forust/folderscope/releases"
-          release_id="${{ steps.release.outputs.release_id }}"
-          for asset in dist/*; do
-            name="$(basename "$asset")"
-            release="$(curl -fsS \
-              "${release_url}/${release_id}" \
-              -H "Authorization: token ${GITEA_TOKEN}")"
-            asset_id="$(printf '%s' "$release" | jq -r --arg name "$name" \
-              '.assets[]? | select(.name == $name) | .id' | head -n 1)"
-            if [ -n "$asset_id" ]; then
-              curl -fsS \
-                -X DELETE "${release_url}/${release_id}/assets/${asset_id}" \
-                -H "Authorization: token ${GITEA_TOKEN}"
-            fi
-            encoded="$(printf '%s' "$name" | jq -sRr @uri)"
-            curl -fsS \
-              -X POST "${release_url}/${release_id}/assets?name=${encoded}" \
-              -H "Authorization: token ${GITEA_TOKEN}" \
-              -F "attachment=@${asset}"
-          done
+          scripts/upload-release-assets.sh \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
+            "$RELEASE_ID" dist
 
   publish-arch-package:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_arch)
     needs: verify
     runs-on: [self-hosted, linux, arch, homelab]
+    permissions:
+      code: read
     env:
       RELEASE_TAG: ${{ github.event.inputs.release_tag }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref }}
+          fetch-depth: 0
 
       - name: Build Arch package
         shell: bash
@@ -167,8 +175,9 @@ jobs:
           set -euo pipefail
           tag="${RELEASE_TAG:-${GITHUB_REF##*/}}"
           version="${tag#v}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${tag}^{commit}")"
           test "$version" = "$(tr -d '[:space:]' < VERSION)"
-          git archive --format=tar.gz --prefix="folderscope-${version}/" HEAD \
+          git archive --format=tar.gz --prefix="folderscope-${version}/" "${tag}^{commit}" \
             > "packaging/arch/folderscope-${version}.tar.gz"
           (
             cd packaging/arch
@@ -177,11 +186,13 @@ jobs:
 
       - name: Publish to Gitea Arch registry
         shell: bash
+        env:
+          FOLDERSCOPE_PACKAGE_TOKEN: ${{ secrets.FOLDERSCOPE_PACKAGE_TOKEN }}
         run: |
           set -euo pipefail
           package_file="$(find packaging/arch -maxdepth 1 -type f \
             -name 'folderscope-*.pkg.tar.zst' -print -quit)"
           test -n "$package_file"
-          curl --fail --show-error --user "forust:${GITEA_TOKEN}" \
+          curl --fail --show-error --user "forust:${FOLDERSCOPE_PACKAGE_TOKEN}" \
             --upload-file "$package_file" \
-            "https://gitea.forust.xyz/api/packages/forust/arch/folderscope"
+            "${GITHUB_SERVER_URL}/api/packages/${GITHUB_REPOSITORY_OWNER}/arch/folderscope"

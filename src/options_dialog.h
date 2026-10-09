@@ -42,6 +42,7 @@ private:
     void saveProfile();
     void loadProfile();
 
+    SearchOptions initialOptions_;
     QComboBox *mode_{};
     QComboBox *duplicateMode_{};
     QCheckBox *duplicateWithoutExtension_{};
