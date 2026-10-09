@@ -391,3 +391,6 @@ FolderScope — локальное настольное приложение н�
 - Upload helper корректно отклоняет неожиданные имя/размер asset; HTTP tests проверяют оба ответа.
 - Release и Debug CTest: 11/11 passed в каждой сборке. GUI offscreen smoke прошёл. YAML, shell syntax, desktop entry, XML, AppStream и Arch srcinfo проверены. AppStream сообщает только informational/pedantic рекомендации.
 - Пользователь разрешил commit и release. AUD-17 остаётся pending; публикация планируется из локально проверенного commit, без изменения VPS runner.
+
+- Clean Arch container: makepkg успешно собрал folderscope 0.3.1-1 и отдельный debug package. Workflow upload выбирает только основной пакет по имени, чтобы не опубликовать debug вместо приложения.
+- Main run 1765 для caa847e подтвердил AUD-17: Configure release build завершился с `cmake: command not found`; test/build steps не запускались.

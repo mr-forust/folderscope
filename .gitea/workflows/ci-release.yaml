@@ -191,7 +191,7 @@ jobs:
         run: |
           set -euo pipefail
           package_file="$(find packaging/arch -maxdepth 1 -type f \
-            -name 'folderscope-*.pkg.tar.zst' -print -quit)"
+            -name 'folderscope-[0-9]*.pkg.tar.zst' -print -quit)"
           test -n "$package_file"
           curl --fail --show-error --user "forust:${FOLDERSCOPE_PACKAGE_TOKEN}" \
             --upload-file "$package_file" \
