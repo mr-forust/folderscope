@@ -7,3 +7,8 @@
 /.vscode/
 /CMakeLists.txt.user
 /CMakeLists.txt.user.*
+/.ci-tools/
+/packaging/arch/*.pkg.tar.zst
+/packaging/arch/*.tar.gz
+/packaging/arch/pkg/
+/packaging/arch/src/

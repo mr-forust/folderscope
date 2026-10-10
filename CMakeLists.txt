@@ -182,4 +182,13 @@ if (BUILD_TESTING)
                      "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_creation_test.py"
                      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/create-gitea-release.sh")
     set_tests_properties(release-create PROPERTIES TIMEOUT 15)
+    add_test(NAME arch-package-publish
+             COMMAND Python3::Interpreter
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/arch_package_publish_test.py"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/publish-arch-package.sh")
+    set_tests_properties(arch-package-publish PROPERTIES TIMEOUT 15)
+    add_test(NAME runner-preflight
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/runner_preflight_test.sh"
+                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-runner.sh")
+    set_tests_properties(runner-preflight PROPERTIES TIMEOUT 15)
 endif()
