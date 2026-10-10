@@ -3,3 +3,4 @@ RUN pacman -Syu --noconfirm --needed cmake ninja qt6-base qt6-tools python git c
     && rm -f /var/cache/pacman/pkg/*
 WORKDIR /work
 ENV HOME=/tmp
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1

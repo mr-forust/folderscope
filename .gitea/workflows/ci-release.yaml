@@ -73,7 +73,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 2"
+        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 1"
 
       - name: Run tests
         shell: bash
@@ -133,7 +133,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 2"
+        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 1"
 
       - name: Package release
         shell: bash

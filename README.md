@@ -93,8 +93,8 @@ Docker, Git, Python 3, curl, Node.js for checkout, and at least 2 GiB of free
 space on both the workspace and Docker filesystems. The workflow builds a
 cached Arch Linux image with CMake, Qt 6, Ninja, and makepkg; the VPS does
 not need an Arch toolchain installed on the host. A cached image requires
-at least 512 MiB of free space for each later build step. Builds use two parallel
-jobs to limit memory use. Each container runs with the runner's UID and GID.
+at least 512 MiB of free space for each later build step. Builds run one compiler job at a time
+to fit the VPS memory limit, including builds started by makepkg. Each container runs with the runner's UID and GID.
 
 The lint tools use pinned versions in `scripts/tool-versions.env` and a
 cache under `~/.cache/folderscope-ci`, following the homelab CI pattern.
