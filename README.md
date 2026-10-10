@@ -89,7 +89,7 @@ Then install with `sudo pacman -Syu folderscope` (or `yay -S folderscope`).
 ### Release publishing requirements
 
 The `ci-release` workflow uses the VPS `homelab` runner. The runner needs
-Docker, Git, Python 3, curl, Node.js for checkout, and at least 2 GiB of free
+Docker, Git, Python 3, curl, Node.js for checkout, and at least 5 GiB of free
 space on both the workspace and Docker filesystems. The workflow builds a
 cached Arch Linux image with CMake, Qt 6, Ninja, and makepkg; the VPS does
 not need an Arch toolchain installed on the host. A cached image requires

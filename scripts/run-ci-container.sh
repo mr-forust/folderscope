@@ -6,7 +6,7 @@ if [[ $# -ne 1 ]]; then
 fi
 tools_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="folderscope-ci:$(sha256sum "$tools_root/.gitea/ci/Dockerfile" | cut -c 1-16)"
-min_free_mib=2048
+min_free_mib=5120
 if docker image inspect "$image" >/dev/null 2>&1; then
     min_free_mib=512
 fi
