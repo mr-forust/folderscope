@@ -14,12 +14,14 @@ the build to one compiler job and the container to one CPU, 768 MiB RAM and
 ## Approved image offload: 2026-10-11
 
 The disabled project's image `folderscope-ci:d2aa3d244a23bca4` was removed
-from the VPS with user approval. Its archive is stored on the workstation:
+from the VPS with user approval. Its archive is stored on the local desktop (`gigaforust`):
 
 ```text
 /home/forust/Documents/Codex/2026-10-11/files-pasted-by-the-user-vps/outputs/folderscope-ci-d2aa3d244a23bca4.tar.zst
 ```
 
+A second archive copy is on SSH host `workstation` under
+`/home/forust/.local/share/gitea-ci-backups/`, with the same checksum.
 The adjacent `.sha256` file records SHA256
 `8209a33ce3652c88d6ad4dc1b823cd1297d38f825c39f7ebb3c3752a42bf5a48`.
 The archive passed `zstd -t` and a local `docker image load`; the restored
@@ -27,7 +29,7 @@ RootFS layer digests matched the VPS source. Offload released 2,132,893,696
 bytes. Keep the archive outside Git. No application data or volumes were removed.
 
 Before an approved manual build using the optimized workflow, restore from
-the workstation (fish compatible):
+the local desktop (fish compatible):
 
 ```sh
 cd /home/forust/Documents/Codex/2026-10-11/files-pasted-by-the-user-vps/outputs
@@ -43,3 +45,6 @@ Restoring avoids a cold rebuild and does not enable automatic workflows.
 No automatic image, BuildKit or volume cleanup is configured. Roll back the
 offload by loading the archive. Keep workflow triggers disabled until the
 optimized branch is reviewed and adopted; do not enable releases to test restore.
+
+A second archive copy is retained on SSH host `workstation` in
+`/home/forust/.local/share/gitea-ci-backups/`; its checksum is verified separately.
