@@ -22,7 +22,7 @@ permissions:
 jobs:
   verify:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: homelab
+    runs-on: workstation-build
     timeout-minutes: 30
     permissions:
       contents: read
@@ -102,7 +102,7 @@ jobs:
   publish-linux-amd64:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
-    runs-on: homelab
+    runs-on: workstation-build
     timeout-minutes: 30
     permissions:
       code: read
@@ -175,7 +175,7 @@ jobs:
   publish-arch-package:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_arch)
     needs: verify
-    runs-on: homelab
+    runs-on: workstation-build
     timeout-minutes: 30
     permissions:
       code: read
