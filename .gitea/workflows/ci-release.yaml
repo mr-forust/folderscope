@@ -1,12 +1,7 @@
 name: ci-release
 
 "on":
-  push:
-    branches:
-      - main
-      - "fix/**"
-    tags:
-      - "v[0-9]*.[0-9]*.[0-9]*"
+  # Automatic VPS CI and release runs are paused. Use workflow_dispatch to run manually.
   # Do not add pull_request here until these labels use a verified isolated runner.
   # Manual verification must start from main; release_tag selects a validated tag.
   workflow_dispatch:
