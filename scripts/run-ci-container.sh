@@ -19,6 +19,7 @@ FOLDERSCOPE_CHECK_PATH="$docker_root" "$tools_root/scripts/check-runner.sh" --mi
 if (( build_image )); then
     docker build --tag "$image" "$tools_root/.gitea/ci"
 fi
-docker run --rm --user "$(id -u):$(id -g)" \
+docker run --rm --cpus=1 --memory=768m --pids-limit=512 \
+    --user "$(id -u):$(id -g)" \
     --volume "$PWD:/work" --workdir /work \
     --env QT_QPA_PLATFORM=offscreen "$image" bash -euo pipefail -c "$1"
