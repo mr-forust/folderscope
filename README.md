@@ -86,6 +86,28 @@ Server = https://git.forust.xyz/api/packages/forust/arch/$repo/$arch
 
 Then install with `sudo pacman -Syu folderscope` (or `yay -S folderscope`).
 
+### Release publishing requirements
+
+The `ci-release` workflow uses the VPS `homelab` runner. The runner needs
+Docker, Git, Python 3, curl, Node.js for checkout, and at least 5 GiB of free
+space on both the workspace and Docker filesystems. The workflow builds a
+cached Arch Linux image with CMake, Qt 6, Ninja, and makepkg; the VPS does
+not need an Arch toolchain installed on the host. A cached image requires
+at least 512 MiB of free space for each later build step. Builds run one compiler job at a time
+to fit the VPS memory limit, including builds started by makepkg. Each container runs with the runner's UID and GID.
+
+The lint tools use pinned versions in `scripts/tool-versions.env` and a
+cache under `~/.cache/folderscope-ci`, following the homelab CI pattern.
+Run `bash scripts/install-ci-tools.sh actionlint shellcheck yamllint` to
+install them locally. Update the checkout commit and base image digest
+only after checking the new upstream release and running the checks.
+
+Arch publication requires the existing `FOLDERSCOPE_PACKAGE_TOKEN` Actions
+secret with the `write:package` scope. A missing token, HTTP 401, or HTTP 409
+stops publication and keeps the existing package. Release jobs run only
+for version tags or explicit manual Arch publication from main. CI helpers
+come from the workflow commit; the selected tag remains the package source.
+
 Translations are Qt `.ts` files in `translations/`; CMake compiles and installs
 their `.qm` files automatically. The application selects the system locale at
 startup.

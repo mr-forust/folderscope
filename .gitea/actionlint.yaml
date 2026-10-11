@@ -1,0 +1,5 @@
+self-hosted-runner:
+  labels:
+    - homelab
+    - homelab-pr
+    - workstation-build

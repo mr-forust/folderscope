@@ -22,7 +22,8 @@ permissions:
 jobs:
   verify:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, arch, homelab]
+    runs-on: workstation-build
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -33,6 +34,14 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout CI tools from the workflow commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-tools
+          persist-credentials: false
 
       - name: Validate selected release ref
         if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
@@ -45,8 +54,7 @@ jobs:
           git show-ref --verify --quiet "refs/tags/${tag}"
           tag_commit="$(git rev-parse "${tag}^{commit}")"
           test "$(git rev-parse HEAD)" = "$tag_commit"
-          git fetch --no-tags origin main
-          main_commit="$(git rev-parse FETCH_HEAD^{commit})"
+          main_commit="$(git rev-parse "refs/remotes/origin/main^{commit}")"
           git merge-base --is-ancestor "$tag_commit" "$main_commit"
 
       - name: Require a release tag for manual Arch publication
@@ -56,41 +64,46 @@ jobs:
 
       - name: Configure release build
         shell: bash
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: .ci-tools/scripts/run-ci-container.sh "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release"
 
       - name: Build
         shell: bash
-        run: cmake --build build --parallel
+        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 1"
 
       - name: Run tests
         shell: bash
-        run: ctest --test-dir build --output-on-failure
+        run: .ci-tools/scripts/run-ci-container.sh "ctest --test-dir build --output-on-failure"
 
       - name: Smoke test GUI
         shell: bash
         run: |
-          set +e
-          QT_QPA_PLATFORM=offscreen timeout 3s ./build/folderscope
-          status="$?"
-          test "$status" = 0 || test "$status" = 124
+          # shellcheck disable=SC2016 # Expanded by the shell inside the container.
+          .ci-tools/scripts/run-ci-container.sh \
+            'set +e; timeout 3s ./build/folderscope; status="$?"; test "$status" = 0 || test "$status" = 124'
 
       - name: Verify Linux binary
         shell: bash
         run: test -x build/folderscope
 
-      - name: Lint YAML
+      - name: Lint workflows and shell scripts
         shell: bash
         run: |
-          docker run --rm \
-            -v "$PWD:/work" \
-            -w /work \
-            cytopia/yamllint@sha256:3e9eb827ab2b12a5ea5f49d4257bb3aca94bba9f1ba427c8bc7f2456385a5204 \
-            -c .yamllint .gitea
+          set -euo pipefail
+          tools_dir="$(bash .ci-tools/scripts/install-ci-tools.sh actionlint shellcheck yamllint)"
+          export PATH="$tools_dir:$PATH"
+          cd .ci-tools
+          yamllint -c .yamllint .gitea
+          # Gitea uses code and releases scopes in addition to GitHub scopes.
+          actionlint -config-file .gitea/actionlint.yaml \
+            -ignore 'unknown permission scope "(code|releases)"' .gitea/workflows/*.yaml
+          mapfile -t scripts < <(git ls-files '*.sh')
+          shellcheck --external-sources --source-path=SCRIPTDIR "${scripts[@]}"
 
   publish-linux-amd64:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
-    runs-on: [self-hosted, linux, arch, homelab]
+    runs-on: workstation-build
+    timeout-minutes: 30
     permissions:
       code: read
       releases: write
@@ -100,14 +113,22 @@ jobs:
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout CI tools from the workflow commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-tools
+          persist-credentials: false
 
       - name: Configure release build
         shell: bash
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: .ci-tools/scripts/run-ci-container.sh "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release"
 
       - name: Build
         shell: bash
-        run: cmake --build build --parallel
+        run: .ci-tools/scripts/run-ci-container.sh "cmake --build build --parallel 1"
 
       - name: Package release
         shell: bash
@@ -118,7 +139,8 @@ jobs:
           generation="${GITHUB_SHA:0:12}-run${GITHUB_RUN_ID}-attempt${GITHUB_RUN_ATTEMPT}"
           package="folderscope-${version}-linux-amd64-${generation}"
           rm -rf dist package
-          cmake --install build --prefix "$PWD/package/usr"
+          # shellcheck disable=SC2016 # Expanded by the shell inside the container.
+          .ci-tools/scripts/run-ci-container.sh 'cmake --install build --prefix "$PWD/package/usr"'
           mkdir -p "package/${package}"
           mv package/usr "package/${package}/"
           cp README.md CHANGELOG.md VERSION "package/${package}/"
@@ -136,7 +158,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF##*/}"
           release_url="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases"
-          release_id="$(scripts/create-gitea-release.sh "$release_url" "$tag" "$GITHUB_SHA")"
+          release_id="$(.ci-tools/scripts/create-gitea-release.sh "$release_url" "$tag" "$GITHUB_SHA")"
           test -n "$release_id" && test "$release_id" != "null"
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
 
@@ -146,14 +168,15 @@ jobs:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
           RELEASE_ID: ${{ steps.release.outputs.release_id }}
         run: |
-          scripts/upload-release-assets.sh \
+          .ci-tools/scripts/upload-release-assets.sh \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/releases" \
             "$RELEASE_ID" dist
 
   publish-arch-package:
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_arch)
     needs: verify
-    runs-on: [self-hosted, linux, arch, homelab]
+    runs-on: workstation-build
+    timeout-minutes: 30
     permissions:
       code: read
     env:
@@ -164,6 +187,14 @@ jobs:
         with:
           ref: ${{ github.event.inputs.release_tag || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout CI tools from the workflow commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-tools
+          persist-credentials: false
 
       - name: Build Arch package
         shell: bash
@@ -175,10 +206,8 @@ jobs:
           test "$version" = "$(tr -d '[:space:]' < VERSION)"
           git archive --format=tar.gz --prefix="folderscope-${version}/" "${tag}^{commit}" \
             > "packaging/arch/folderscope-${version}.tar.gz"
-          (
-            cd packaging/arch
-            makepkg --syncdeps --noconfirm --force
-          )
+          .ci-tools/scripts/run-ci-container.sh \
+            'cd packaging/arch && makepkg --noconfirm --force'
 
       - name: Publish to Gitea Arch registry
         shell: bash
@@ -189,6 +218,5 @@ jobs:
           package_file="$(find packaging/arch -maxdepth 1 -type f \
             -name 'folderscope-[0-9]*.pkg.tar.zst' -print -quit)"
           test -n "$package_file"
-          curl --fail --show-error --user "forust:${FOLDERSCOPE_PACKAGE_TOKEN}" \
-            --upload-file "$package_file" \
-            "${GITHUB_SERVER_URL}/api/packages/${GITHUB_REPOSITORY_OWNER}/arch/folderscope"
+          .ci-tools/scripts/publish-arch-package.sh \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY_OWNER" folderscope "$package_file"
