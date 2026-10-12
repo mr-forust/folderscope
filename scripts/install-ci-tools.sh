@@ -43,15 +43,7 @@ case "$arch" in
 esac
 
 fetch() {
-  # fetch <url> <dest>
-  if command -v curl >/dev/null 2>&1; then
-    curl -sSLf --connect-timeout 15 --max-time 120 --retry 3 -o "$2" "$1"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
-  else
-    echo "install-ci-tools: neither curl nor wget is available" >&2
-    exit 1
-  fi
+  bash "$here/download-verified.sh" "$1" "$2"
 }
 
 # resolve <command>
@@ -99,7 +91,7 @@ install_shellcheck() {
   tmp="$(mktemp -d)"
   fetch "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${sharch}.tar.xz" \
     "$tmp/shellcheck.tar.xz"
-  tar -xJf "$tmp/shellcheck.tar.xz" -C "$tmp" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+  tar --no-same-owner -xJf "$tmp/shellcheck.tar.xz" -C "$tmp" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
   install -m 0755 "$tmp/shellcheck" "$BIN_DIR/shellcheck"
   rm -rf "$tmp"
 }
@@ -113,7 +105,7 @@ install_uv() {
   # uv release tags carry no leading v, unlike every other tool installed here.
   fetch "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${sharch}-unknown-linux-gnu.tar.gz" \
     "$tmp/uv.tar.gz"
-  tar -xzf "$tmp/uv.tar.gz" -C "$tmp" --strip-components=1 "uv-${sharch}-unknown-linux-gnu/uv"
+  tar --no-same-owner -xzf "$tmp/uv.tar.gz" -C "$tmp" --strip-components=1 "uv-${sharch}-unknown-linux-gnu/uv"
   install -m 0755 "$tmp/uv" "$BIN_DIR/uv"
   rm -rf "$tmp"
 }
@@ -139,7 +131,7 @@ install_actionlint() {
   tmp="$(mktemp -d)"
   fetch "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${goarch}.tar.gz" \
     "$tmp/actionlint.tar.gz"
-  tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
+  tar --no-same-owner -xzf "$tmp/actionlint.tar.gz" -C "$tmp" actionlint
   install -m 0755 "$tmp/actionlint" "$BIN_DIR/actionlint"
   rm -rf "$tmp"
 }
