@@ -20,7 +20,7 @@ Revert the focused CI commit to restore previous configuration. Reverting source
 files does not restore runner configuration; use the Homelab runner backup procedure.
 Do not prune shared Docker images or volumes to fix a failed job.
 
-Automatic compilation remains disabled. `CI checks` validates workflow and shell files on VPS. Release builds remain manual.
+`CI checks` validates workflow and shell files on VPS. Main push and manual main runs also compile, test, and smoke-test the GUI on workstation. PR builds are skipped because the build wrapper needs trusted host Docker access. The required summary accepts this skip only for PR events; main requires the build to succeed. Release publication remains manual.
 
 ## Required main checks
 
@@ -41,4 +41,4 @@ Publication is opt-in: `publish_linux` creates Linux release assets and
 tag is checked against VERSION and used as the release source. Concurrent
 release runs for the same selected ref are serialized and never cancelled.
 Release publication requires a separate live acceptance run; this CI maintenance
-does not publish a release or enable automatic compilation.
+does not publish a release.

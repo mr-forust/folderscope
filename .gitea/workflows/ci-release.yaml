@@ -1,7 +1,7 @@
 name: ci-release
 
 "on":
-  # Automatic VPS CI and release runs are paused. Use workflow_dispatch to run manually.
+  # Publication remains manual. Automatic main builds run in ci-checks.yaml.
   # Do not add pull_request here until these labels use a verified isolated runner.
   # Manual verification must start from main; release_tag selects a validated tag.
   workflow_dispatch:
