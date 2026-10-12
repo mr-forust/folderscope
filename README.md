@@ -94,7 +94,7 @@ space on both the workspace and Docker filesystems. The workflow builds a
 cached Arch Linux image with CMake, Qt 6, Ninja, and makepkg; the VPS does
 not need an Arch toolchain installed on the host. A cached image requires
 at least 512 MiB of free space for each later build step. Builds run one compiler job at a time
-to fit the VPS memory limit, including builds started by makepkg. Each container runs with the runner's UID and GID.
+to bound workstation resource use, including builds started by makepkg. Each container runs with the runner's UID and GID.
 
 The lint tools use pinned versions in `scripts/tool-versions.env` and a
 cache under `~/.cache/folderscope-ci`, following the homelab CI pattern.
@@ -105,7 +105,7 @@ only after checking the new upstream release and running the checks.
 Arch publication requires the existing `FOLDERSCOPE_PACKAGE_TOKEN` Actions
 secret with the `write:package` scope. A missing token, HTTP 401, or HTTP 409
 stops publication and keeps the existing package. Release jobs run only
-for version tags or explicit manual Arch publication from main. CI helpers
+for explicit manual publication from main with a validated version tag. CI helpers
 come from the workflow commit; the selected tag remains the package source.
 
 Translations are Qt `.ts` files in `translations/`; CMake compiles and installs

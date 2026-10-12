@@ -28,9 +28,36 @@ jobs:
       - name: Validate CI configuration offline
         run: bash .gitea/workflows/validate-ci-config.sh
 
+  build:
+    name: Build, tests, and GUI smoke (workstation)
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
+    needs: [workflow-shell]
+    runs-on: workstation-build
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: scripts/run-ci-container.sh "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release"
+      - name: Build with one compiler
+        run: scripts/run-ci-container.sh "cmake --build build --parallel 1"
+      - name: Run tests
+        run: scripts/run-ci-container.sh "ctest --test-dir build --output-on-failure"
+      - name: Smoke test GUI
+        run: |
+          # shellcheck disable=SC2016 # Expanded inside the build container.
+          scripts/run-ci-container.sh \
+            'set +e; timeout 3s ./build/folderscope; status="$?"; test "$status" = 0 || test "$status" = 124'
+      - name: Verify binary
+        run: test -x build/folderscope
+
   summary:
     name: CI summary
-    needs: [workflow-shell]
+    needs: [workflow-shell, build]
     if: always()
     runs-on: >-
       ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -40,7 +67,15 @@ jobs:
       - name: Report configuration checks
         env:
           RESULT: ${{ needs.workflow-shell.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          EVENT: ${{ github.event_name }}
         run: |
           printf '## CI results\n\n| Job | Result |\n| --- | --- |\n| Workflow, shell, and Compose | %s |\n' \
             "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf '| Build, tests, and GUI smoke | %s |\n' "$BUILD_RESULT" >> "$GITHUB_STEP_SUMMARY"
           test "$RESULT" = success
+          if test "$EVENT" = pull_request_target; then
+            test "$BUILD_RESULT" = skipped
+          else
+            test "$BUILD_RESULT" = success
+          fi
