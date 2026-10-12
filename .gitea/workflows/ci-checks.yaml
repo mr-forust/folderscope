@@ -1,0 +1,41 @@
+name: CI checks
+"on":
+  push:
+    branches: [main]
+  pull_request_target:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: folderscope-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' || github.ref != 'refs/heads/main' }}
+jobs:
+  workflow-shell:
+    name: Workflow, shell, and Compose
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && 'vps-light' || 'vps-pr' }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact source without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate CI configuration offline
+        run: bash .gitea/workflows/validate-ci-config.sh
+
+  summary:
+    name: CI summary
+    needs: [workflow-shell]
+    if: always()
+    runs-on: vps-pr
+    timeout-minutes: 5
+    steps:
+      - name: Report configuration checks
+        env:
+          RESULT: ${{ needs.workflow-shell.result }}
+        run: |
+          printf '## CI results\n\n| Job | Result |\n| --- | --- |\n| Workflow, shell, and Compose | %s |\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          test "$RESULT" = success

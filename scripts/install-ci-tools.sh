@@ -43,15 +43,7 @@ case "$arch" in
 esac
 
 fetch() {
-  # fetch <url> <dest>
-  if command -v curl >/dev/null 2>&1; then
-    curl -sSLf --connect-timeout 15 --max-time 120 --retry 3 -o "$2" "$1"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
-  else
-    echo "install-ci-tools: neither curl nor wget is available" >&2
-    exit 1
-  fi
+  bash "$here/download-verified.sh" "$1" "$2"
 }
 
 # resolve <command>
