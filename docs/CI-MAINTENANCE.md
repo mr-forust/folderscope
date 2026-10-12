@@ -32,3 +32,13 @@ overrides remain available; normal changes should use checked PRs.
 Runner post-task maintenance clears supported npm/uv download caches above
 256 MiB each under the installer lock. Installed tools, runtimes, Rust caches,
 Docker images and application data are outside that cleanup.
+
+## Manual releases
+
+Start `ci-release` from main. Set an existing `release_tag` contained in main.
+Publication is opt-in: `publish_linux` creates Linux release assets and
+`publish_arch` uploads the Arch package. Both default to false. The selected
+tag is checked against VERSION and used as the release source. Concurrent
+release runs for the same selected ref are serialized and never cancelled.
+Release publication requires a separate live acceptance run; this CI maintenance
+does not publish a release or enable automatic compilation.
