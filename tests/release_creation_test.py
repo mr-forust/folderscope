@@ -22,7 +22,7 @@ class ReleaseApi(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.server.get_count += 1
-        if self.headers.get("Authorization") != "token test-token":
+        if self.headers.get("Authorization") != "token test-token" or self.headers.get("User-Agent") != "folderscope-ci/1.0":
             self._respond(401, {"message": "unexpected token"})
             return
         if self.path != "/api/v1/repos/forust/folderscope/releases/tags/v1.2.3":
@@ -38,7 +38,7 @@ class ReleaseApi(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.server.post_count += 1
-        if self.headers.get("Authorization") != "token test-token":
+        if self.headers.get("Authorization") != "token test-token" or self.headers.get("User-Agent") != "folderscope-ci/1.0":
             self._respond(401, {"message": "unexpected token"})
             return
         if self.path != "/api/v1/repos/forust/folderscope/releases":

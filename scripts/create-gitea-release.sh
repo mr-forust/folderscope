@@ -27,7 +27,7 @@ token = os.environ["GITEA_TOKEN"]
 
 def request_json(method, url, payload=None):
     data = None if payload is None else json.dumps(payload).encode()
-    headers = {"Authorization": f"token {token}"}
+    headers = {"Authorization": f"token {token}", "User-Agent": "folderscope-ci/1.0"}
     if data is not None:
         headers["Content-Type"] = "application/json"
     request = Request(url, data=data, headers=headers, method=method)
